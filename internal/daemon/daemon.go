@@ -42,7 +42,7 @@ type Daemon struct {
 func (d *Daemon) Handle(_ context.Context, req ipc.Request) (ipc.Response, func()) {
 	switch req.Cmd {
 	case ipc.CmdStatus:
-		return ipc.Response{OK: true, Status: toIPC(d.Ctl.Status())}, nil
+		return ipc.Response{OK: true, Status: toIPC(d.Ctl.Status(), d.ConfigPath)}, nil
 	case ipc.CmdPause:
 		d.Ctl.Pause()
 		return ipc.Response{OK: true}, nil
@@ -67,13 +67,42 @@ func (d *Daemon) Handle(_ context.Context, req ipc.Request) (ipc.Response, func(
 	}
 }
 
-func toIPC(s controller.Status) *ipc.Status {
-	out := &ipc.Status{Paused: s.Paused, Night: s.Night, Monitors: []ipc.MonitorStatus{}}
+func toIPC(s controller.Status, configPath string) *ipc.Status {
+	rgb := func(r *controller.RGB) *ipc.RGB {
+		if r == nil {
+			return nil
+		}
+		return &ipc.RGB{R: r.R, G: r.G, B: r.B}
+	}
+	nm := s.NightMode
+	night := ipc.NightStatus{
+		Enabled: nm.Enabled, Ramp: config.FormatDuration(nm.Ramp), Phase: string(nm.Phase),
+		Fallback: nm.Fallback, FallbackActive: nm.FallbackActive, FallbackKelvin: nm.FallbackKelvin,
+	}
+	if nm.Enabled {
+		night.Start, night.End = config.FormatClock(nm.Start), config.FormatClock(nm.End)
+	}
+	if !nm.NextChange.IsZero() {
+		night.NextChange = nm.NextChange.Format("15:04")
+	}
+	out := &ipc.Status{
+		Paused: s.Paused, Night: s.Night, NightMode: night, Config: configPath,
+		PollInterval: config.FormatDuration(s.PollInterval), RescanInterval: config.FormatDuration(s.RescanInterval),
+		VerifyInterval: config.FormatDuration(s.VerifyInterval),
+		Monitors:       []ipc.MonitorStatus{},
+	}
 	for _, m := range s.Monitors {
-		out.Monitors = append(out.Monitors, ipc.MonitorStatus{
+		ms := ipc.MonitorStatus{
 			Name: m.Name, Key: m.Key, Bus: m.Bus, Current: m.Current, Target: m.Target,
 			Online: m.Online, Fails: m.Fails, LastError: m.LastError,
-		})
+			ColorControl: m.ColorControl, RGB: rgb(m.RGB), RGBTarget: rgb(m.RGBTarget), RGBOriginal: rgb(m.RGBOriginal),
+			NightLevel: ipc.RGB{R: m.NightLevel.R, G: m.NightLevel.G, B: m.NightLevel.B}, OwnLevel: m.OwnLevel,
+			Schedule: []ipc.SchedulePoint{},
+		}
+		for _, p := range m.Schedule {
+			ms.Schedule = append(ms.Schedule, ipc.SchedulePoint{Time: config.FormatClock(p.Minute), Brightness: p.Brightness})
+		}
+		out.Monitors = append(out.Monitors, ms)
 	}
 	return out
 }

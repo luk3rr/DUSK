@@ -62,6 +62,7 @@ type FakeDisplay struct {
 	mu      sync.Mutex
 	failSet error
 	tries   int
+	gets    int
 	values  map[ddc.VCP]int
 	writes  []Write
 }
@@ -86,6 +87,13 @@ func (f *FakeDisplay) SetAttempts() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.tries
+}
+
+// Gets counts the reads made, to show how chatty a caller is on the bus.
+func (f *FakeDisplay) Gets() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.gets
 }
 
 // Value returns the current value of a VCP.
@@ -113,6 +121,7 @@ func (f *FakeDisplay) Caps() ddc.Caps { return f.DisplayCaps }
 func (f *FakeDisplay) Get(_ context.Context, vcp ddc.VCP) (int, int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.gets++
 	v, ok := f.values[vcp]
 	if !ok {
 		return 0, 0, ddc.ErrUnsupported

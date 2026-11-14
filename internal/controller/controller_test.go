@@ -16,6 +16,7 @@ import (
 	"dusk/internal/ddc"
 	"dusk/internal/ddc/ddctest"
 	"dusk/internal/nightlight"
+	"dusk/internal/schedule"
 	"dusk/internal/state"
 )
 
@@ -122,7 +123,7 @@ func noRGB(d *ddctest.FakeDisplay) *ddctest.FakeDisplay {
 
 func newEnv(t *testing.T, n config.Night, start time.Time, mons []config.Monitor, displays ...ddc.Display) *env {
 	t.Helper()
-	cfg := &config.Config{PollInterval: 30 * time.Second, RescanInterval: 5 * time.Minute, Night: n, Monitors: mons}
+	cfg := &config.Config{PollInterval: 30 * time.Second, RescanInterval: 5 * time.Minute, VerifyInterval: 5 * time.Minute, Night: n, Monitors: mons}
 	e := &env{
 		clk:      &clock{t: start},
 		store:    &state.Store{Path: filepath.Join(t.TempDir(), "state.json")},
@@ -220,7 +221,8 @@ func TestManualChangeIsReapplied(t *testing.T) {
 	d := newDisp("M", 1, 40)
 	e := newEnv(t, nightCfg("off"), day, []config.Monitor{constMon("M", 40)}, d)
 	e.tick()
-	d.SetValue(ddc.VCPBrightness, 37) // someone used the monitor buttons
+	d.SetValue(ddc.VCPBrightness, 37)           // someone used the monitor buttons
+	e.clk.set(e.clk.Now().Add(6 * time.Minute)) // the next periodic check reads the monitor back
 	e.tick()
 	if got := values(d.Writes(), ddc.VCPBrightness); !equalInts(got, []int{38, 39, 40}) {
 		t.Errorf("reapplied writes = %v", got)
@@ -695,7 +697,7 @@ func TestWakeShortensTheWait(t *testing.T) {
 	}
 	expect("the first poll wait")
 	d.SetValue(ddc.VCPBrightness, 35) // a manual change
-	e.ctl.Wake()
+	e.ctl.Resume()                    // like Wake, and it also forces the monitors to be read again
 	expect("the second poll wait (after Wake)")
 	if d.Value(ddc.VCPBrightness) != 40 {
 		t.Errorf("Wake should trigger an immediate tick that corrects the value: %d", d.Value(ddc.VCPBrightness))
@@ -760,5 +762,190 @@ func TestReloadedColorLevelTakesEffect(t *testing.T) {
 	e.tick()
 	if got := a.Value(ddc.VCPBlueGain); got != 30 {
 		t.Errorf("after the reload blue = %d; want 30 (reached gradually, one point per write)", got)
+	}
+}
+
+// ---- richer status (colors and configuration) ----
+
+func TestStatusShowsColorsAndNightConfigAtNight(t *testing.T) {
+	a := newDisp("A", 1, 60)
+	blue := 40
+	mon := constMon("A", 60)
+	mon.Night = config.MonitorNight{BlueGain: &blue}
+	e := newEnv(t, nightCfg("off"), night, []config.Monitor{mon}, a)
+	e.tick()
+	st := e.ctl.Status()
+
+	nm := st.NightMode
+	if !nm.Enabled || nm.Start != 21*60 || nm.End != 7*60 || nm.Phase != schedule.PhaseNight || nm.Fallback != "off" || nm.FallbackActive {
+		t.Errorf("night mode = %+v", nm)
+	}
+	if st.PollInterval != 30*time.Second || st.RescanInterval != 5*time.Minute {
+		t.Errorf("intervals = %v %v", st.PollInterval, st.RescanInterval)
+	}
+	m := st.Monitors[0]
+	if !m.ColorControl || m.RGB == nil || *m.RGB != (RGB{100, 100, 40}) {
+		t.Errorf("current color = %+v", m.RGB)
+	}
+	if m.RGBTarget == nil || *m.RGBTarget != (RGB{100, 100, 40}) {
+		t.Errorf("target color = %+v", m.RGBTarget)
+	}
+	if m.RGBOriginal == nil || *m.RGBOriginal != (RGB{100, 100, 100}) {
+		t.Errorf("original = %+v", m.RGBOriginal)
+	}
+	if m.NightLevel != (RGB{100, 100, 40}) || !m.OwnLevel {
+		t.Errorf("night level = %+v own=%v", m.NightLevel, m.OwnLevel)
+	}
+	if len(m.Schedule) != 1 || m.Schedule[0].Brightness != 60 {
+		t.Errorf("schedule = %+v", m.Schedule)
+	}
+}
+
+func TestStatusShowsUntouchedColorsByDay(t *testing.T) {
+	a := newDisp("A", 1, 60)
+	a.SetValue(ddc.VCPBlueGain, 90) // the user's own calibration
+	e := newEnv(t, nightCfg("off"), day, []config.Monitor{constMon("A", 60)}, a)
+	e.tick()
+	m := e.ctl.Status().Monitors[0]
+	if m.RGB == nil || *m.RGB != (RGB{100, 100, 90}) {
+		t.Errorf("by day the colors are read, not changed: %+v", m.RGB)
+	}
+	if m.RGBTarget != nil || m.RGBOriginal != nil || m.OwnLevel {
+		t.Errorf("nothing is being changed: target=%v original=%v own=%v", m.RGBTarget, m.RGBOriginal, m.OwnLevel)
+	}
+	if len(a.Writes()) != 0 {
+		t.Errorf("reading the colors for the status must never write: %v", a.Writes())
+	}
+	if p := e.ctl.Status().NightMode.Phase; p != schedule.PhaseDay {
+		t.Errorf("phase = %s", p)
+	}
+}
+
+func TestStatusForAMonitorWithoutColorControl(t *testing.T) {
+	b := noRGB(newDisp("B", 2, 60))
+	e := newEnv(t, nightCfg("auto"), night, []config.Monitor{constMon("B", 60)}, b)
+	e.tick()
+	st := e.ctl.Status()
+	m := st.Monitors[0]
+	if m.ColorControl || m.RGB != nil || m.RGBTarget != nil {
+		t.Errorf("no color data expected: %+v", m)
+	}
+	if !st.NightMode.FallbackActive || st.NightMode.FallbackKelvin != 2700 {
+		t.Errorf("the night-light fallback should be reported: %+v", st.NightMode)
+	}
+}
+
+func TestStatusColorsFollowTheRamp(t *testing.T) {
+	a := newDisp("A", 1, 60)
+	e := newEnv(t, nightCfg("off"), time.Date(2026, 11, 14, 21, 15, 0, 0, time.UTC), []config.Monitor{constMon("A", 60)}, a)
+	e.tick()
+	st := e.ctl.Status()
+	if st.NightMode.Phase != schedule.PhaseFadingIn {
+		t.Errorf("phase = %s", st.NightMode.Phase)
+	}
+	m := st.Monitors[0]
+	if m.RGBTarget == nil || m.RGBTarget.B <= 60 || m.RGBTarget.B >= 100 || m.RGB.B > 100 {
+		t.Errorf("mid-ramp target should be between day and night: %+v / %+v", m.RGBTarget, m.RGB)
+	}
+}
+
+// ---- quiet polling: the bus is touched only when there is something to do ----
+
+func TestSteadyStateDoesNotTouchTheBus(t *testing.T) {
+	d := newDisp("M", 1, 60)
+	e := newEnv(t, nightCfg("off"), night, []config.Monitor{constMon("M", 60)}, d)
+	e.tick() // night plateau: it reads everything once and writes the blue gain down
+	afterFirst, writes := d.Gets(), len(d.Writes())
+	if afterFirst == 0 {
+		t.Fatal("the first tick must read the monitor")
+	}
+	for i := 0; i < 6; i++ { // three minutes of 30-second ticks (the first tick's 40 writes took 80 s of that time)
+		e.clk.set(e.clk.Now().Add(30 * time.Second))
+		e.tick()
+	}
+	if d.Gets() != afterFirst || len(d.Writes()) != writes {
+		t.Errorf("a tick with nothing to change must not use the bus: gets %d -> %d, writes %d -> %d",
+			afterFirst, d.Gets(), writes, len(d.Writes()))
+	}
+}
+
+func TestOneHourOfTicksIsAFractionOfTheOldTraffic(t *testing.T) {
+	d := newDisp("M", 1, 60)
+	e := newEnv(t, nightCfg("off"), night, []config.Monitor{constMon("M", 60)}, d)
+	for i := 0; i < 120; i++ { // an hour of 30-second ticks at the night plateau
+		e.tick()
+		e.clk.set(e.clk.Now().Add(30 * time.Second))
+	}
+	// Reading brightness and three gains on every tick would be 120 x 4 = 480 reads. With a check every
+	// five minutes it is 12 checks x 4 reads, plus the writes' own verification, which dusk does not count.
+	if got := d.Gets(); got > 60 {
+		t.Errorf("reads in one hour = %d; the old behavior made 480", got)
+	}
+	t.Logf("reads in one hour of night plateau: %d (was 480)", d.Gets())
+}
+
+func TestManualChangeIsNoticedAtTheNextCheckNotBefore(t *testing.T) {
+	d := newDisp("M", 1, 40)
+	e := newEnv(t, nightCfg("off"), day, []config.Monitor{constMon("M", 40)}, d)
+	e.tick()
+	d.SetValue(ddc.VCPBrightness, 20)
+	e.clk.set(e.clk.Now().Add(2 * time.Minute))
+	e.tick()
+	if len(d.Writes()) != 0 {
+		t.Fatalf("inside the verify interval dusk trusts what it knows: %v", d.Writes())
+	}
+	e.clk.set(e.clk.Now().Add(4 * time.Minute)) // 6 minutes since the first read
+	e.tick()
+	if d.Value(ddc.VCPBrightness) != 40 {
+		t.Errorf("the check should notice and undo the manual change: %d", d.Value(ddc.VCPBrightness))
+	}
+}
+
+func TestScheduleChangesAreWrittenFromTheKnownValueWithoutReading(t *testing.T) {
+	d := newDisp("M", 1, 100)
+	// By day the brightness falls from 100% at 12:00 to 0% at 13:00, so the target moves every tick.
+	mon := config.Monitor{Name: "M", Match: "M", Points: []config.Point{{Minute: 12 * 60, Brightness: 100}, {Minute: 13 * 60, Brightness: 0}}}
+	e := newEnv(t, nightCfg("off"), day, []config.Monitor{mon}, d)
+	e.tick()
+	reads := d.Gets()
+	for i := 0; i < 8; i++ { // four minutes of 30-second ticks, inside the verify interval
+		e.clk.set(e.clk.Now().Add(30 * time.Second))
+		e.tick()
+	}
+	if len(d.Writes()) == 0 {
+		t.Fatal("the schedule is moving, so brightness writes are expected")
+	}
+	if d.Gets() != reads {
+		t.Errorf("the writes must start from the value dusk already knows, without reading: gets %d -> %d", reads, d.Gets())
+	}
+	if got := d.Value(ddc.VCPBrightness); got > 95 || got < 85 {
+		t.Errorf("brightness after ~4.5 minutes of the fall = %d; want about 92", got)
+	}
+}
+
+func TestResumeAndFailuresForceANewRead(t *testing.T) {
+	d := newDisp("M", 1, 40)
+	e := newEnv(t, nightCfg("off"), day, []config.Monitor{constMon("M", 40)}, d)
+	e.tick()
+	base := d.Gets()
+	e.ctl.Pause()
+	e.ctl.Resume()
+	e.tick()
+	if d.Gets() <= base {
+		t.Error("resuming must read the monitors again: someone may have used the buttons while paused")
+	}
+
+	next := *e.ctl.cfg.Load()
+	next.Monitors = []config.Monitor{constMon("M", 42)} // a new target, so a write is needed
+	e.ctl.SetConfig(&next)
+	d.SetFailure(errors.New("i2c hung"))
+	e.clk.set(e.clk.Now().Add(time.Minute))
+	e.tick() // the write fails: the cached values are no longer trusted
+	d.SetFailure(nil)
+	base = d.Gets()
+	e.clk.set(e.clk.Now().Add(time.Minute)) // backoff over
+	e.tick()
+	if d.Gets() <= base {
+		t.Error("after a failure the next attempt must read the monitor first")
 	}
 }

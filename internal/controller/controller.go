@@ -51,7 +51,13 @@ type monState struct {
 	until     time.Time
 	lastErr   string
 	rgbBroken bool
-	curB      int // last brightness read or written
+	curB      int    // last brightness read or written
+	curRGB    [3]int // last red, green and blue gains read or written
+	rgbKnown  bool
+	// known is true while curB (and curRGB) reflect what the hardware reported or what dusk wrote;
+	// verifiedAt is when the monitor was last read back.
+	known      bool
+	verifiedAt time.Time
 }
 
 // Controller applies the schedule. Tick, Run and Shutdown must not run concurrently.
@@ -79,11 +85,15 @@ type Controller struct {
 	nightActive     bool
 	warnedNoBackend bool
 
-	paused   atomic.Bool
-	kick     chan struct{}
-	statusMu sync.Mutex
-	status   Status
+	paused      atomic.Bool
+	forceVerify atomic.Bool // read every monitor again at the next tick
+	kick        chan struct{}
+	statusMu    sync.Mutex
+	status      Status
 }
+
+// RGB holds red, green and blue values.
+type RGB struct{ R, G, B int }
 
 // MonitorStatus is a snapshot of one configured monitor.
 type MonitorStatus struct {
@@ -95,13 +105,42 @@ type MonitorStatus struct {
 	Online    bool
 	Fails     int
 	LastError string
+
+	ColorControl bool
+	// RGB is the last color gain read from the monitor (nil if unknown or unsupported).
+	RGB *RGB
+	// RGBTarget is where night mode is taking the gains right now (nil when dusk is not touching them).
+	RGBTarget *RGB
+	// RGBOriginal is the gain saved before dusk changed anything (nil when nothing was changed).
+	RGBOriginal *RGB
+	// NightLevel is the configured gain, in percent of the original, at the peak of night mode.
+	NightLevel RGB
+	// OwnLevel is true when the monitor overrides the global level.
+	OwnLevel bool
+	Schedule []config.Point
+}
+
+// NightStatus describes night mode in the running configuration.
+type NightStatus struct {
+	Enabled        bool
+	Start, End     int // minutes since 00:00
+	Ramp           time.Duration
+	Phase          schedule.Phase
+	NextChange     time.Time
+	Fallback       string
+	FallbackActive bool
+	FallbackKelvin int
 }
 
 // Status is a snapshot of the controller, refreshed at the end of every Tick.
 type Status struct {
-	Paused   bool
-	Night    float64 // night-mode intensity, 0 to 1
-	Monitors []MonitorStatus
+	Paused         bool
+	Night          float64 // night-mode intensity, 0 to 1
+	NightMode      NightStatus
+	PollInterval   time.Duration
+	RescanInterval time.Duration
+	VerifyInterval time.Duration
+	Monitors       []MonitorStatus
 }
 
 // New creates the Controller.
@@ -173,6 +212,7 @@ func (c *Controller) Resume() {
 	if c.paused.Swap(false) {
 		c.log.Info("resumed")
 	}
+	c.forceVerify.Store(true) // someone may have used the monitor buttons while paused
 	c.Wake()
 }
 
@@ -217,6 +257,11 @@ func (c *Controller) wait(ctx context.Context, d time.Duration) error {
 func (c *Controller) Tick(ctx context.Context) {
 	if c.paused.Load() {
 		return
+	}
+	if c.forceVerify.Swap(false) {
+		for _, m := range c.mons {
+			m.known = false
+		}
 	}
 	cfg := c.cfg.Load()
 	c.ensureLoaded()
@@ -268,20 +313,55 @@ func (c *Controller) Tick(ctx context.Context) {
 	}
 	wg.Wait()
 
-	st := Status{Night: intensity}
+	st := Status{Night: intensity, PollInterval: cfg.PollInterval, RescanInterval: cfg.RescanInterval, VerifyInterval: verifyInterval(cfg)}
+	phase, next := schedule.NightPhase(cfg.Night, now)
+	st.NightMode = NightStatus{
+		Enabled: cfg.Night.Enabled, Start: cfg.Night.Start, End: cfg.Night.End, Ramp: cfg.Night.Ramp,
+		Phase: phase, NextChange: next, Fallback: cfg.Night.Fallback,
+		FallbackActive: c.nlActive, FallbackKelvin: c.nlKelvin,
+	}
 	for _, j := range jobs {
 		target, _ := schedule.Target(*j.mon, now)
 		info := j.m.disp.Info()
-		st.Monitors = append(st.Monitors, MonitorStatus{
-			Name:      j.mon.Name,
-			Key:       info.Key(),
-			Bus:       info.Bus,
-			Current:   j.m.curB,
-			Target:    target,
-			Online:    j.m.disp.Caps().Brightness && j.m.fails < failuresBeforeOffline,
-			Fails:     j.m.fails,
-			LastError: j.m.lastErr,
-		})
+		caps := j.m.disp.Caps()
+		nightM := j.mon.NightFor(cfg.Night)
+		ms := MonitorStatus{
+			Name:         j.mon.Name,
+			Key:          info.Key(),
+			Bus:          info.Bus,
+			Current:      j.m.curB,
+			Target:       target,
+			Online:       caps.Brightness && j.m.fails < failuresBeforeOffline,
+			Fails:        j.m.fails,
+			LastError:    j.m.lastErr,
+			ColorControl: caps.RGB,
+			NightLevel:   RGB{R: nightM.RedGain, G: nightM.GreenGain, B: nightM.BlueGain},
+			OwnLevel:     !j.mon.Night.IsZero(),
+			Schedule:     append([]config.Point(nil), j.mon.Points...),
+		}
+		if caps.RGB {
+			if j.m.rgbKnown {
+				cur := RGB{R: j.m.curRGB[0], G: j.m.curRGB[1], B: j.m.curRGB[2]}
+				ms.RGB = &cur
+			}
+			orig, hasOrig := c.original(info.Key())
+			if hasOrig {
+				ms.RGBOriginal = &RGB{R: orig.R, G: orig.G, B: orig.B}
+			}
+			if eff := intensity * factor; eff > 0 || hasOrig {
+				g0, g1, g2 := schedule.NightGains(nightM, eff)
+				base := orig
+				if !hasOrig && j.m.rgbKnown {
+					base = state.RGB{R: j.m.curRGB[0], G: j.m.curRGB[1], B: j.m.curRGB[2]}
+				}
+				ms.RGBTarget = &RGB{
+					R: int(math.Round(float64(base.R) * float64(g0) / 100)),
+					G: int(math.Round(float64(base.G) * float64(g1) / 100)),
+					B: int(math.Round(float64(base.B) * float64(g2) / 100)),
+				}
+			}
+		}
+		st.Monitors = append(st.Monitors, ms)
 	}
 	c.statusMu.Lock()
 	c.status = st
@@ -443,6 +523,7 @@ func (c *Controller) maybeRescan(ctx context.Context, now time.Time, cfg *config
 		m.disp = d
 		if d.Caps().Brightness && m.fails >= failuresBeforeOffline {
 			m.fails, m.until, m.lastErr = 0, time.Time{}, ""
+			m.known = false
 		}
 		mons[key] = m
 		list = append(list, d)
@@ -455,6 +536,14 @@ func (c *Controller) maybeRescan(ctx context.Context, now time.Time, cfg *config
 	c.mons, c.displays = mons, list
 }
 
+// verifyInterval returns how often monitors are read back, with the default applied.
+func verifyInterval(cfg *config.Config) time.Duration {
+	if cfg.VerifyInterval <= 0 {
+		return config.DefaultVerifyInterval
+	}
+	return cfg.VerifyInterval
+}
+
 func backoff(fails int) time.Duration {
 	d := baseBackoff
 	for i := 1; i < fails && d < maxBackoff; i++ {
@@ -465,6 +554,7 @@ func backoff(fails int) time.Duration {
 
 func (c *Controller) fail(m *monState, err error) {
 	m.fails++
+	m.known = false // do not trust cached values after a failure
 	m.lastErr = err.Error()
 	wait := backoff(m.fails)
 	m.until = c.now().Add(wait)
@@ -486,36 +576,57 @@ func (c *Controller) converge(ctx context.Context, m *monState, mon *config.Moni
 		m.lastErr = "no response during discovery"
 		return
 	}
-	curB, _, err := m.disp.Get(ctx, ddc.VCPBrightness)
-	if err != nil {
-		c.fail(m, err)
-		return
+	// Reading a monitor is a slow I2C transaction that can stall the GPU driver for an instant, so the
+	// hardware is only read when a check is due (or after a failure). In between, the values dusk
+	// already knows are used, and a tick with nothing to change touches the hardware not at all.
+	due := !m.known || now.Sub(m.verifiedAt) >= verifyInterval(cfg)
+	if due {
+		v, _, err := m.disp.Get(ctx, ddc.VCPBrightness)
+		if err != nil {
+			c.fail(m, err)
+			return
+		}
+		m.curB = v
 	}
-	m.curB = curB
+	curB := m.curB
 
 	nightM := mon.NightFor(cfg.Night) // this monitor's own color gains
 	eff := schedule.NightIntensity(cfg.Night, now) * factor
 	orig, hasOrig := c.original(key)
 	manageRGB := caps.RGB && (eff > 0 || hasOrig)
-	var curRGB [3]int
-	if manageRGB {
+	// The gains are read when a check is due, when none is known yet, and always right before the
+	// originals are saved (the saved value must be what the monitor really has).
+	if caps.RGB && (due || !m.rgbKnown || (manageRGB && !hasOrig)) {
+		var v [3]int
+		ok := true
 		for i, vcp := range rgbVCPs {
-			v, _, err := m.disp.Get(ctx, vcp)
+			x, _, err := m.disp.Get(ctx, vcp)
 			if err != nil {
-				c.fail(m, err)
-				return
+				if manageRGB {
+					c.fail(m, err)
+					return
+				}
+				ok = false // only for `dusk status`: not worth failing over
+				break
 			}
-			curRGB[i] = v
+			v[i] = x
 		}
-		if !hasOrig {
-			orig = state.RGB{R: curRGB[0], G: curRGB[1], B: curRGB[2]}
-			if err := c.setOriginal(key, orig); err != nil {
-				c.log.Warn("could not save the original RGB; leaving the monitor untouched", "monitor", key, "error", err)
-				m.lastErr = err.Error()
-				return
-			}
-			hasOrig = true
+		if ok {
+			m.curRGB, m.rgbKnown = v, true
 		}
+	}
+	curRGB := m.curRGB
+	if manageRGB && !hasOrig {
+		orig = state.RGB{R: curRGB[0], G: curRGB[1], B: curRGB[2]}
+		if err := c.setOriginal(key, orig); err != nil {
+			c.log.Warn("could not save the original RGB; leaving the monitor untouched", "monitor", key, "error", err)
+			m.lastErr = err.Error()
+			return
+		}
+		hasOrig = true
+	}
+	if due {
+		m.known, m.verifiedAt = true, now
 	}
 	origRGB := [3]int{orig.R, orig.G, orig.B}
 
@@ -562,6 +673,7 @@ func (c *Controller) converge(ctx context.Context, m *monState, mon *config.Moni
 			for ch := range rgbVCPs {
 				if rgbVCPs[ch] == vcp {
 					curRGB[ch] = next
+					m.curRGB = curRGB
 				}
 			}
 		}

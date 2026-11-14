@@ -75,6 +75,9 @@ points = [{ time = "08:00", brightness = 10 }]
 	if cfg.Night.Fallback != FallbackAuto {
 		t.Errorf("default fallback = %q", cfg.Night.Fallback)
 	}
+	if cfg.VerifyInterval != DefaultVerifyInterval || cfg.RescanInterval != DefaultRescanInterval {
+		t.Errorf("defaults: verify %v rescan %v", cfg.VerifyInterval, cfg.RescanInterval)
+	}
 	if cfg.PollInterval != DefaultPollInterval {
 		t.Errorf("default poll interval: %v", cfg.PollInterval)
 	}
@@ -211,7 +214,7 @@ func TestPerMonitorNightInvalid(t *testing.T) {
 func TestMarshalRoundTripWithMonitorNight(t *testing.T) {
 	blue, red := 45, 90
 	cfg := &Config{
-		PollInterval: DefaultPollInterval, RescanInterval: DefaultRescanInterval,
+		PollInterval: DefaultPollInterval, RescanInterval: DefaultRescanInterval, VerifyInterval: DefaultVerifyInterval,
 		Night: Night{Enabled: true, Start: 21 * 60, End: 7 * 60, Ramp: 30 * time.Minute, BlueGain: 60, RedGain: 100, GreenGain: 100, Fallback: FallbackAuto},
 		Monitors: []Monitor{
 			{Name: "a", Match: "A", Points: []Point{{0, 50}}, Night: MonitorNight{BlueGain: &blue, RedGain: &red}},
@@ -224,5 +227,21 @@ func TestMarshalRoundTripWithMonitorNight(t *testing.T) {
 	}
 	if strings.Count(out, "night = {") != 1 {
 		t.Errorf("a monitor without overrides must not get an inline table:\n%s", out)
+	}
+}
+
+func TestVerifyIntervalIsParsedAndValidated(t *testing.T) {
+	mon := "[[monitor]]\nname = \"a\"\nmatch = \"A\"\npoints = [{ time = \"08:00\", brightness = 1 }]\n"
+	cfg, err := Parse([]byte("verify_interval = \"15m\"\n" + mon))
+	if err != nil || cfg.VerifyInterval != 15*time.Minute {
+		t.Fatalf("%v %v", cfg, err)
+	}
+	for _, bad := range []string{`verify_interval = "0s"`, `verify_interval = "soon"`} {
+		if _, err := Parse([]byte(bad + "\n" + mon)); err == nil || !IsValidation(err) {
+			t.Errorf("%s should be rejected: %v", bad, err)
+		}
+	}
+	if DefaultRescanInterval < 30*time.Minute {
+		t.Errorf("a full rescan runs `ddcutil detect`, the heaviest bus operation, so it must stay rare: %v", DefaultRescanInterval)
 	}
 }

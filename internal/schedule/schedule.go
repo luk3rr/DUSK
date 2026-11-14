@@ -74,6 +74,42 @@ func NightIntensity(n config.Night, t time.Time) float64 {
 	}
 }
 
+// Phase is where night mode currently is in its daily cycle.
+type Phase string
+
+// Night-mode phases.
+const (
+	PhaseOff       Phase = "off"
+	PhaseDay       Phase = "day"
+	PhaseFadingIn  Phase = "fading in"
+	PhaseNight     Phase = "night"
+	PhaseFadingOut Phase = "fading out"
+)
+
+// NightPhase returns the current phase of night mode and the instant it changes
+// to the next one. With night mode disabled it returns PhaseOff and a zero time.
+func NightPhase(n config.Night, t time.Time) (Phase, time.Time) {
+	if !n.Enabled {
+		return PhaseOff, time.Time{}
+	}
+	ramp := n.Ramp.Minutes()
+	window := mod(float64(n.End-n.Start), minutesPerDay)
+	off := mod(minuteOfDay(t)-float64(n.Start), minutesPerDay)
+	var phase Phase
+	var left float64 // minutes until the next phase
+	switch {
+	case off < ramp:
+		phase, left = PhaseFadingIn, ramp-off
+	case off <= window:
+		phase, left = PhaseNight, window-off
+	case off < window+ramp:
+		phase, left = PhaseFadingOut, window+ramp-off
+	default:
+		phase, left = PhaseDay, minutesPerDay-off
+	}
+	return phase, t.Add(time.Duration(left * float64(time.Minute))).Truncate(time.Second)
+}
+
 // NightGains returns the red, green and blue multipliers (in percent) for the
 // given intensity: 100 when night mode is off, the configured gain at its peak.
 func NightGains(n config.Night, intensity float64) (r, g, b int) {

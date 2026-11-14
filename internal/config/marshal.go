@@ -15,7 +15,12 @@ func Marshal(cfg *Config, notes map[string]string) []byte {
 	b.WriteString("# dusk configuration.\n")
 	b.WriteString("# Edit it by hand or run `dusk setup` again. `dusk check-config` validates it.\n\n")
 	fmt.Fprintf(&b, "poll_interval   = %s # how often dusk re-checks the targets\n", tomlString(FormatDuration(cfg.PollInterval)))
-	fmt.Fprintf(&b, "rescan_interval = %s # how often it looks for new or returning monitors\n\n", tomlString(FormatDuration(cfg.RescanInterval)))
+	fmt.Fprintf(&b, "rescan_interval = %s # how often it looks for new or returning monitors\n", tomlString(FormatDuration(cfg.RescanInterval)))
+	verify := cfg.VerifyInterval
+	if verify <= 0 {
+		verify = DefaultVerifyInterval
+	}
+	fmt.Fprintf(&b, "verify_interval = %s # how often it re-reads the monitors to notice manual changes (less often means fewer pauses)\n\n", tomlString(FormatDuration(verify)))
 
 	n := cfg.Night
 	ramp := n.Ramp

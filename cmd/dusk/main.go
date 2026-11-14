@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -259,25 +260,80 @@ func printStatus(w io.Writer, st *ipc.Status) {
 	if st.Paused {
 		state = "paused"
 	}
-	fmt.Fprintf(w, "state: %s\nnight mode: %.0f%%\n", state, st.Night*100)
+	fmt.Fprintf(w, "state:       %s\n", state)
+	if st.Config != "" {
+		fmt.Fprintf(w, "config:      %s\n", st.Config)
+		fmt.Fprintf(w, "timing:      targets every %s, monitors re-read every %s, monitor list rescanned every %s\n", st.PollInterval, st.VerifyInterval, st.RescanInterval)
+	}
+	n := st.NightMode
+	if !n.Enabled {
+		fmt.Fprintln(w, "night mode:  off")
+	} else {
+		fmt.Fprintf(w, "night mode:  on, %s -> %s, fade %s\n", n.Start, n.End, n.Ramp)
+		next := ""
+		if n.NextChange != "" {
+			next = ", next change at " + n.NextChange
+		}
+		fmt.Fprintf(w, "now:         %s (%.0f%%)%s\n", n.Phase, st.Night*100, next)
+		fb := "off (never uses the desktop night light)"
+		switch {
+		case n.Fallback == "auto" && n.FallbackActive:
+			fb = fmt.Sprintf("auto, desktop night light in use at %dK", n.FallbackKelvin)
+		case n.Fallback == "auto":
+			fb = "auto, desktop night light not needed right now"
+		}
+		fmt.Fprintf(w, "fallback:    %s\n", fb)
+	}
 	if len(st.Monitors) == 0 {
-		fmt.Fprintln(w, "no monitors under a schedule yet")
+		fmt.Fprintln(w, "\nno monitors under a schedule yet")
 		return
 	}
-	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tMONITOR\tBUS\tCURRENT\tTARGET\tSTATUS\tLAST ERROR")
 	for _, m := range st.Monitors {
 		status := "online"
 		if !m.Online {
 			status = "offline"
 		}
-		last := m.LastError
-		if last == "" {
-			last = "-"
+		fmt.Fprintf(w, "\n%s  (%s, bus %d)  %s\n", m.Name, m.Key, m.Bus, status)
+		fmt.Fprintf(w, "  brightness   %d%% now, target %d%%\n", m.Current, m.Target)
+		fmt.Fprintf(w, "  color        %s\n", colorLine(m))
+		if m.ColorControl && n.Enabled {
+			scope := "global level"
+			if m.OwnLevel {
+				scope = "this monitor's own level"
+			}
+			fmt.Fprintf(w, "  night level  at the peak: %s of the original (%s)\n", rgbPercent(m.NightLevel), scope)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%d\t%s\t%s\n", m.Name, m.Key, m.Bus, m.Current, m.Target, status, last)
+		pts := make([]string, len(m.Schedule))
+		for i, p := range m.Schedule {
+			pts[i] = fmt.Sprintf("%s %d%%", p.Time, p.Brightness)
+		}
+		fmt.Fprintf(w, "  schedule     %s\n", strings.Join(pts, ", "))
+		if m.LastError != "" {
+			fmt.Fprintf(w, "  last error   %s (failures in a row: %d)\n", m.LastError, m.Fails)
+		}
 	}
-	tw.Flush()
+}
+
+func rgbText(c *ipc.RGB) string { return fmt.Sprintf("R %d  G %d  B %d", c.R, c.G, c.B) }
+
+func rgbPercent(c ipc.RGB) string { return fmt.Sprintf("R %d%%  G %d%%  B %d%%", c.R, c.G, c.B) }
+
+// colorLine summarizes the monitor's color gains for `dusk status`.
+func colorLine(m ipc.MonitorStatus) string {
+	if !m.ColorControl {
+		return "no color control over DDC"
+	}
+	if m.RGB == nil {
+		return "not read yet"
+	}
+	line := rgbText(m.RGB)
+	if m.RGBTarget != nil {
+		line += "   (target " + rgbText(m.RGBTarget) + ")"
+	}
+	if m.RGBOriginal != nil {
+		line += "   original " + rgbText(m.RGBOriginal)
+	}
+	return line
 }
 
 // runSetup implements `dusk setup`.

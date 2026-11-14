@@ -15,7 +15,8 @@ import (
 // Defaults.
 const (
 	DefaultPollInterval   = 30 * time.Second
-	DefaultRescanInterval = 5 * time.Minute
+	DefaultRescanInterval = 30 * time.Minute
+	DefaultVerifyInterval = 5 * time.Minute
 	DefaultRamp           = 30 * time.Minute
 	DefaultBlueGain       = 60
 	DefaultFallback       = FallbackAuto
@@ -33,6 +34,9 @@ const (
 type Config struct {
 	PollInterval   time.Duration
 	RescanInterval time.Duration
+	// VerifyInterval is how often the monitors are read back to notice manual changes.
+	// Between checks dusk relies on the values it knows, which keeps the I2C bus quiet.
+	VerifyInterval time.Duration
 	Night          Night
 	Monitors       []Monitor
 }
@@ -104,6 +108,7 @@ func (e *ValidationError) Error() string {
 type rawConfig struct {
 	PollInterval   string       `toml:"poll_interval"`
 	RescanInterval string       `toml:"rescan_interval"`
+	VerifyInterval string       `toml:"verify_interval"`
 	Night          *rawNight    `toml:"night"`
 	Monitors       []rawMonitor `toml:"monitor"`
 }
@@ -161,6 +166,7 @@ func Parse(data []byte) (*Config, error) {
 	cfg := &Config{}
 	cfg.PollInterval = v.duration("poll_interval", raw.PollInterval, DefaultPollInterval)
 	cfg.RescanInterval = v.duration("rescan_interval", raw.RescanInterval, DefaultRescanInterval)
+	cfg.VerifyInterval = v.duration("verify_interval", raw.VerifyInterval, DefaultVerifyInterval)
 	cfg.Night = v.night(raw.Night)
 	cfg.Monitors = v.monitors(raw.Monitors)
 	if len(v.problems) > 0 {

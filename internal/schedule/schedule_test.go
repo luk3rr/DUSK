@@ -204,3 +204,34 @@ func TestNightLightKelvin(t *testing.T) {
 		}
 	}
 }
+
+func TestNightPhase(t *testing.T) {
+	n := night(21, 7, 30*time.Minute)
+	tests := []struct {
+		name string
+		at   time.Time
+		want Phase
+		next time.Time
+	}{
+		{"afternoon", at(14, 0, 0), PhaseDay, at(21, 0, 0)},
+		{"just before start", at(20, 59, 0), PhaseDay, at(21, 0, 0)},
+		{"start", at(21, 0, 0), PhaseFadingIn, at(21, 30, 0)},
+		{"middle of the fade in", at(21, 15, 0), PhaseFadingIn, at(21, 30, 0)},
+		{"plateau", at(23, 0, 0), PhaseNight, time.Date(2026, 11, 14, 7, 0, 0, 0, time.UTC)},
+		{"after midnight", at(3, 0, 0), PhaseNight, at(7, 0, 0)},
+		{"end", at(7, 0, 0), PhaseNight, at(7, 0, 0)},
+		{"fading out", at(7, 10, 0), PhaseFadingOut, at(7, 30, 0)},
+		{"morning", at(7, 30, 0), PhaseDay, at(21, 0, 0)},
+	}
+	for _, tc := range tests {
+		got, next := NightPhase(n, tc.at)
+		if got != tc.want || !next.Equal(tc.next) {
+			t.Errorf("%s: %s until %v; want %s until %v", tc.name, got, next, tc.want, tc.next)
+		}
+	}
+	off := n
+	off.Enabled = false
+	if p, next := NightPhase(off, at(3, 0, 0)); p != PhaseOff || !next.IsZero() {
+		t.Errorf("disabled: %s %v", p, next)
+	}
+}

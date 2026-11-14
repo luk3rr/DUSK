@@ -45,6 +45,19 @@ type Request struct {
 	Cmd string `json:"cmd"`
 }
 
+// RGB holds red, green and blue values.
+type RGB struct {
+	R int `json:"r"`
+	G int `json:"g"`
+	B int `json:"b"`
+}
+
+// SchedulePoint is one key point of a monitor's brightness schedule.
+type SchedulePoint struct {
+	Time       string `json:"time"`
+	Brightness int    `json:"brightness"`
+}
+
 // MonitorStatus describes one monitor in a status reply.
 type MonitorStatus struct {
 	Name      string `json:"name"`
@@ -55,13 +68,39 @@ type MonitorStatus struct {
 	Online    bool   `json:"online"`
 	Fails     int    `json:"fails"`
 	LastError string `json:"last_error"`
+
+	ColorControl bool            `json:"color_control"`
+	RGB          *RGB            `json:"rgb,omitempty"`          // last gains read from the monitor
+	RGBTarget    *RGB            `json:"rgb_target,omitempty"`   // where night mode is taking them
+	RGBOriginal  *RGB            `json:"rgb_original,omitempty"` // saved before dusk changed anything
+	NightLevel   RGB             `json:"night_level"`            // percent of the original at the peak
+	OwnLevel     bool            `json:"own_level"`
+	Schedule     []SchedulePoint `json:"schedule"`
+}
+
+// NightStatus describes night mode in the running configuration.
+type NightStatus struct {
+	Enabled        bool   `json:"enabled"`
+	Start          string `json:"start"`
+	End            string `json:"end"`
+	Ramp           string `json:"ramp"`
+	Phase          string `json:"phase"`
+	NextChange     string `json:"next_change,omitempty"` // HH:MM, local time
+	Fallback       string `json:"fallback"`
+	FallbackActive bool   `json:"fallback_active"`
+	FallbackKelvin int    `json:"fallback_kelvin,omitempty"`
 }
 
 // Status is the payload of a status reply.
 type Status struct {
-	Paused   bool            `json:"paused"`
-	Night    float64         `json:"night"`
-	Monitors []MonitorStatus `json:"monitors"`
+	Paused         bool            `json:"paused"`
+	Night          float64         `json:"night"`
+	NightMode      NightStatus     `json:"night_mode"`
+	Config         string          `json:"config"`
+	PollInterval   string          `json:"poll_interval"`
+	RescanInterval string          `json:"rescan_interval"`
+	VerifyInterval string          `json:"verify_interval"`
+	Monitors       []MonitorStatus `json:"monitors"`
 }
 
 // Response is the daemon's reply. Status is set only for the status command.

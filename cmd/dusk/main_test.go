@@ -175,7 +175,7 @@ func TestControlCommandsAgainstARunningDaemon(t *testing.T) {
 	if code := run(context.Background(), []string{"status"}, nil, &out, &errb); code != 0 {
 		t.Fatalf("status exit %d: %s", code, errb.String())
 	}
-	for _, want := range []string{"state: running", "desk", "24G4#SN1", "online"} {
+	for _, want := range []string{"running", "config:", "night mode:  off", "desk", "24G4#SN1", "online", "brightness   40% now, target 40%", "R 40  G 40  B 40", "schedule     00:00 40%"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("status output lacks %q:\n%s", want, out.String())
 		}
@@ -190,7 +190,7 @@ func TestControlCommandsAgainstARunningDaemon(t *testing.T) {
 	run(context.Background(), []string{"pause"}, nil, &out, &errb)
 	out.Reset()
 	run(context.Background(), []string{"status"}, nil, &out, &errb)
-	if !strings.Contains(out.String(), "state: paused") {
+	if !strings.Contains(out.String(), "state:       paused") {
 		t.Errorf("status after pause:\n%s", out.String())
 	}
 	out.Reset()
@@ -474,5 +474,53 @@ func TestStartReportsSuccessWhenTheDaemonComesUp(t *testing.T) {
 	var out, errb bytes.Buffer
 	if code := run(context.Background(), []string{"start"}, nil, &out, &errb); code != 0 || !strings.Contains(out.String(), "dusk started") {
 		t.Errorf("exit %d, out %q, err %q", code, out.String(), errb.String())
+	}
+}
+
+func TestPrintStatusDuringNightMode(t *testing.T) {
+	st := &ipc.Status{
+		Night: 0.5, Config: "/home/x/.config/dusk/config.toml", PollInterval: "30s", RescanInterval: "5m",
+		NightMode: ipc.NightStatus{Enabled: true, Start: "19:00", End: "07:00", Ramp: "1h", Phase: "fading in",
+			NextChange: "20:00", Fallback: "auto", FallbackActive: true, FallbackKelvin: 3700},
+		Monitors: []ipc.MonitorStatus{
+			{Name: "desk", Key: "MODEL#S1", Bus: 5, Current: 30, Target: 31, Online: true, ColorControl: true,
+				RGB: &ipc.RGB{R: 100, G: 100, B: 80}, RGBTarget: &ipc.RGB{R: 100, G: 100, B: 79},
+				RGBOriginal: &ipc.RGB{R: 100, G: 100, B: 100}, NightLevel: ipc.RGB{R: 100, G: 100, B: 60},
+				Schedule: []ipc.SchedulePoint{{Time: "08:00", Brightness: 70}, {Time: "22:00", Brightness: 25}}},
+			{Name: "side", Key: "OTHER", Bus: 7, Online: false, ColorControl: false, Fails: 3, LastError: "i2c hung",
+				NightLevel: ipc.RGB{R: 100, G: 100, B: 40}, OwnLevel: true, Schedule: []ipc.SchedulePoint{{Time: "00:00", Brightness: 50}}},
+		},
+	}
+	var out bytes.Buffer
+	printStatus(&out, st)
+	for _, want := range []string{
+		"state:       running",
+		"night mode:  on, 19:00 -> 07:00, fade 1h",
+		"now:         fading in (50%), next change at 20:00",
+		"fallback:    auto, desktop night light in use at 3700K",
+		"desk  (MODEL#S1, bus 5)  online",
+		"color        R 100  G 100  B 80   (target R 100  G 100  B 79)   original R 100  G 100  B 100",
+		"night level  at the peak: R 100%  G 100%  B 60% of the original (global level)",
+		"schedule     08:00 70%, 22:00 25%",
+		"side  (OTHER, bus 7)  offline",
+		"color        no color control over DDC",
+		"last error   i2c hung (failures in a row: 3)",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("status lacks %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "night level  at the peak: R 100%  G 100%  B 40%") {
+		t.Error("a monitor without color control must not show a night level")
+	}
+}
+
+func TestPrintStatusWhenPausedAndNightIsOff(t *testing.T) {
+	var out bytes.Buffer
+	printStatus(&out, &ipc.Status{Paused: true})
+	for _, want := range []string{"state:       paused", "night mode:  off", "no monitors under a schedule yet"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("status lacks %q:\n%s", want, out.String())
+		}
 	}
 }

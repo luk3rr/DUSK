@@ -102,6 +102,15 @@ func TestStatusPauseResume(t *testing.T) {
 	if r.Paused || m.Name != "desk" || m.Key != "24G4#SN1" || m.Bus != 5 || m.Current != 50 || m.Target != 50 || !m.Online {
 		t.Errorf("status = %+v", r.Status)
 	}
+	if r.Config != h.config || r.PollInterval != "1h" || r.RescanInterval != "30m" || r.VerifyInterval != "5m" || r.NightMode.Enabled || r.NightMode.Phase != "off" {
+		t.Errorf("configuration in the status = %+v", r.Status)
+	}
+	if !m.ColorControl || m.RGB == nil || *m.RGB != (ipc.RGB{R: 50, G: 50, B: 50}) || m.RGBTarget != nil {
+		t.Errorf("colors in the status = %+v", m)
+	}
+	if len(m.Schedule) != 1 || m.Schedule[0].Time != "00:00" || m.Schedule[0].Brightness != 50 {
+		t.Errorf("schedule in the status = %+v", m.Schedule)
+	}
 	if !h.send(ipc.CmdPause).OK || !h.send(ipc.CmdStatus).Paused {
 		t.Error("pause did not take effect")
 	}

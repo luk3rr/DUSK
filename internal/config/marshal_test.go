@@ -24,6 +24,7 @@ func TestMarshalRoundTrip(t *testing.T) {
 	cfg := &Config{
 		PollInterval:   45 * time.Second,
 		RescanInterval: 10 * time.Minute,
+		VerifyInterval: 7 * time.Minute,
 		Night: Night{Enabled: true, Start: 21*60 + 30, End: 6*60 + 15, Ramp: time.Hour,
 			BlueGain: 55, RedGain: 95, GreenGain: 100, Fallback: FallbackOff},
 		Monitors: []Monitor{
@@ -32,7 +33,7 @@ func TestMarshalRoundTrip(t *testing.T) {
 		},
 	}
 	out := roundTrip(t, cfg, map[string]string{"desk": "Vendor Model A (serial SERIAL-1)\nDP-1, i2c bus 5"})
-	for _, want := range []string{"# Vendor Model A (serial SERIAL-1)", "# DP-1, i2c bus 5", `ramp       = "1h"`, `poll_interval   = "45s"`, `rescan_interval = "10m"`} {
+	for _, want := range []string{"# Vendor Model A (serial SERIAL-1)", "# DP-1, i2c bus 5", `ramp       = "1h"`, `poll_interval   = "45s"`, `rescan_interval = "10m"`, `verify_interval = "7m"`} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
@@ -41,7 +42,7 @@ func TestMarshalRoundTrip(t *testing.T) {
 
 func TestMarshalNightDisabledAndNoMonitors(t *testing.T) {
 	cfg := &Config{
-		PollInterval: DefaultPollInterval, RescanInterval: DefaultRescanInterval,
+		PollInterval: DefaultPollInterval, RescanInterval: DefaultRescanInterval, VerifyInterval: DefaultVerifyInterval,
 		Night: Night{Enabled: false, Ramp: DefaultRamp, BlueGain: 60, RedGain: 100, GreenGain: 100, Fallback: FallbackAuto},
 	}
 	out := roundTrip(t, cfg, nil)
@@ -52,7 +53,7 @@ func TestMarshalNightDisabledAndNoMonitors(t *testing.T) {
 
 func TestMarshalQuotesSpecialCharacters(t *testing.T) {
 	cfg := &Config{
-		PollInterval: DefaultPollInterval, RescanInterval: DefaultRescanInterval,
+		PollInterval: DefaultPollInterval, RescanInterval: DefaultRescanInterval, VerifyInterval: DefaultVerifyInterval,
 		Night: Night{Ramp: DefaultRamp, BlueGain: 60, RedGain: 100, GreenGain: 100, Fallback: FallbackAuto},
 		Monitors: []Monitor{
 			{Name: `we"ird\name`, Match: "Model \"X\" \\ 27\"\t#tab", Points: []Point{{0, 10}}},
@@ -62,7 +63,7 @@ func TestMarshalQuotesSpecialCharacters(t *testing.T) {
 }
 
 func TestMarshalDefaultsForUnsetRampAndFallback(t *testing.T) {
-	cfg := &Config{PollInterval: DefaultPollInterval, RescanInterval: DefaultRescanInterval,
+	cfg := &Config{PollInterval: DefaultPollInterval, RescanInterval: DefaultRescanInterval, VerifyInterval: DefaultVerifyInterval,
 		Night: Night{BlueGain: 60, RedGain: 100, GreenGain: 100}}
 	got, err := Parse(Marshal(cfg, nil))
 	if err != nil {

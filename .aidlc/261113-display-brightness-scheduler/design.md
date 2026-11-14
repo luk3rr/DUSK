@@ -660,3 +660,13 @@ WantedBy=graphical-session.target
 - **Setup:** after the global night block and the fallback question, each monitor with color control is asked "Use a different night color level for X?" (default: yes only if it already has one); then blue, then optionally red and green. An existing override survives whichever schedule choice is made. Nothing is asked when night mode is off.
 - **Not changed:** the night-light fallback stays global (it is one desktop setting).
 
+## 3.x Amendment 2026-11-13 — quiet polling (FR-22)
+
+- **Problem:** `converge` read the brightness (and, during night mode, the three gains) of every monitor on every tick. Each DDC read is an I2C transaction; on the NVIDIA proprietary driver this stalls the display pipeline briefly, so the user saw periodic stutters. Measured: about 13% of a core on average.
+- **Decision:** per-monitor cache. `monState` keeps `known`, `verifiedAt`, `curB` and `curRGB`. A tick reads the hardware only when `!known` or `now - verifiedAt >= verify_interval`; otherwise it computes the target and writes from the cached values (each write updates the cache). A tick with nothing to change makes no bus call.
+- **Invalidation:** `fail()` clears `known`; `Resume()` sets `forceVerify`, consumed by the next `Tick`; a monitor that comes back from offline is re-read; a monitor object created by a rescan starts unknown.
+- **Originals:** the RGB gains are always read fresh right before the originals are saved, so the saved value is what the monitor really has.
+- **Config:** new `verify_interval` (default 5m, validated like the other durations); default `rescan_interval` raised to 30m. Existing files keep their explicit values; `dusk setup` preserves them.
+- **Trade-off:** a manual change on the monitor is corrected up to `verify_interval` later (FR-11 is weaker by that much). `dusk status` shows values as of the last check.
+- **Rejected:** a long `poll_interval` alone would also cut traffic but makes brightness and color move in bigger visible steps; and `ddcutil --noverify` saves one read per write but removes the write check.
+

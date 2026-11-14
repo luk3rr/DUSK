@@ -4,3 +4,5 @@ bin/
 .aidlc/**/audit.md
 .aidlc/**/archive/
 .aidlc/**/screenshots/
+
+.idea/

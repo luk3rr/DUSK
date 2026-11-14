@@ -110,9 +110,9 @@ func Run(ctx context.Context, o Options) error {
 		}
 	}
 
-	cfg := &config.Config{PollInterval: config.DefaultPollInterval, RescanInterval: config.DefaultRescanInterval}
+	cfg := &config.Config{PollInterval: config.DefaultPollInterval, RescanInterval: config.DefaultRescanInterval, VerifyInterval: config.DefaultVerifyInterval}
 	if existing != nil {
-		cfg.PollInterval, cfg.RescanInterval = existing.PollInterval, existing.RescanInterval
+		cfg.PollInterval, cfg.RescanInterval, cfg.VerifyInterval = existing.PollInterval, existing.RescanInterval, existing.VerifyInterval
 	}
 	notes := map[string]string{}
 	for _, e := range entries {
