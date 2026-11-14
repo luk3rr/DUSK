@@ -1,0 +1,6 @@
+bin/
+
+# AI-DLC: versioned knowledge and plans, local logs (same policy as MOINEX)
+.aidlc/**/audit.md
+.aidlc/**/archive/
+.aidlc/**/screenshots/
