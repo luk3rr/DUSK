@@ -1,13 +1,13 @@
 # AI-DLC State — tui-software-color
 
 - Intent: 261117-tui-software-color
-- Status: IN_PROGRESS
+- Status: COMPLETE
 - Profile: custom (classic + 1.1)   Depth: Standard   Tests: Standard
 - Project type: brownfield   Repos: DUSK
 - Switches: collaborators=off reviewers=off plan_approval=off walking_skeleton=off autonomy=automatic-checkpoints iteration=unit-major
 - Verification command: `test -z "$(gofmt -l .)" && go vet ./... && go test -race ./... && just english-check` (approved 2026-11-17)
 - Language: chat=pt-BR files=pt-BR
-- Current: phase=construction stage=3.1 Functional Design   Updated: 2026-11-17
+- Current: phase=construction stage=done (3.6 Build and Test)   Updated: 2026-11-17
 
 ## Route
 Legend: [x] done · [>] current · [ ] pending · [S] skipped (reason) · [!] needs redo
