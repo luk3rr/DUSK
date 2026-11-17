@@ -1,0 +1,23 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: extractions/setup-just@v2
+      # gofmt, go vet and go test -race (the tests never touch a monitor, D-Bus or a terminal).
+      - run: just check
+      # The repository is written in English: no non-ASCII characters outside the author headers.
+      - run: just english-check
