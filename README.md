@@ -1,6 +1,12 @@
-# dusk
+<p align="center">
+  <img src="docs/img/icon.png" alt="dusk icon: the word DUSK over a sunset gradient with a sun on the horizon and a crescent moon" width="128" height="128">
+</p>
 
-Per-monitor brightness schedules and a gradual night mode for Linux, with a terminal interface.
+<h1 align="center">dusk</h1>
+
+<p align="center">
+  Per-monitor brightness schedules and a gradual night mode for Linux, with a terminal interface.
+</p>
 
 dusk changes the colors and brightness of each screen **in software** (a gamma ramp), so nothing is
 left behind in the monitor. Turn the computer off at night and plug the monitor into another
