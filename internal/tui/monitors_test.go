@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -163,6 +164,8 @@ func TestMonitorsListShowsTheConfiguration(t *testing.T) {
 	}
 }
 
+func shift(typ tea.KeyType) tea.KeyMsg { return tea.KeyMsg{Type: typ} }
+
 func TestEditAMonitorAndSave(t *testing.T) {
 	store, c := newStore(t), &fakeClient{st: sampleStatus()}
 	m := open(t, store, c)
@@ -170,20 +173,26 @@ func TestEditAMonitorAndSave(t *testing.T) {
 	if m.mon.ed == nil || !strings.Contains(m.View(), "Edit monitor") || !strings.Contains(m.View(), "editing: Ctrl+S save") {
 		t.Fatalf("editor not open:\n%s", m.View())
 	}
-	m = replace(t, m, "Desk")                       // Name
-	m = down(t, m, 2)                               // Brightness
-	m = step(t, m, k(tea.KeyRight))                 // software -> ddc
-	m = step(t, down(t, m, 1), k(tea.KeyBackspace)) // Floor: "10" -> "1"
-	m = typed(t, m, "5")                            // 15
-	m = down(t, m, 3)                               // Night blue
-	m = replace(t, m, "25")
+	m = replace(t, m, "Desk")                // Name
+	m = down(t, m, 2)                        // Brightness
+	m = step(t, m, k(tea.KeyRight))          // software -> ddc
+	m = down(t, m, 1)                        // Floor slider: 10
+	m = step(t, m, shift(tea.KeyShiftRight)) // +5 -> 15
+	m = down(t, m, 1)                        // Night color: global
+	m = step(t, m, k(tea.KeyRight))          // -> warmth
+	m = down(t, m, 1)                        // Warmth slider
+	before := atoi(m.mon.ed.get("Warmth"), 0)
+	m = step(t, step(t, m, k(tea.KeyLeft)), k(tea.KeyLeft)) // -200 K
 	m = step(t, m, k(tea.KeyCtrlS))
 	if store.saves() != 1 {
 		t.Fatalf("saves = %d\n%s", store.saves(), m.View())
 	}
 	mon := store.last(t).Monitors[0]
-	if mon.Name != "Desk" || mon.Brightness != "ddc" || mon.Floor != 15 || mon.Night.BlueGain == nil || *mon.Night.BlueGain != 25 {
-		t.Fatalf("saved monitor = %+v", mon)
+	if mon.Name != "Desk" || mon.Brightness != "ddc" || mon.Floor != 15 || mon.Night.Temperature == nil || *mon.Night.Temperature != before-200 {
+		t.Fatalf("saved monitor = %+v (warmth before %d)", mon, before)
+	}
+	if mon.Night.BlueGain != nil {
+		t.Errorf("a warmth monitor must not keep RGB overrides: %+v", mon.Night)
 	}
 	if len(store.last(t).Monitors) != 2 || store.last(t).Monitors[1].Name != "Center" {
 		t.Errorf("the other monitor must be untouched: %+v", store.last(t).Monitors)
@@ -200,13 +209,12 @@ func TestInvalidFieldsShowTheirMessageAndSaveNothing(t *testing.T) {
 	store := newStore(t)
 	m := open(t, store, &fakeClient{st: sampleStatus()})
 	m = step(t, m, k(tea.KeyEnter))
-	m = down(t, m, 3) // Floor
-	m = replace(t, m, "80")
-	m = down(t, m, 1) // Night red
-	m = replace(t, m, "abc")
+	m = replace(t, m, "") // empty name
+	m = down(t, m, 5)     // first schedule time
+	m = replace(t, m, "25:99")
 	m = step(t, m, k(tea.KeyCtrlS))
 	v := m.View()
-	for _, want := range []string{"a whole number from 0 to 50", "a whole number from 0 to 100"} {
+	for _, want := range []string{"the name cannot be empty", "use HH:MM, for example 21:30"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("view lacks %q:\n%s", want, v)
 		}
@@ -214,7 +222,7 @@ func TestInvalidFieldsShowTheirMessageAndSaveNothing(t *testing.T) {
 	if store.saves() != 0 || m.mon.ed == nil {
 		t.Fatal("an invalid form must not be saved or closed")
 	}
-	if m.mon.ed.focus != 3 {
+	if m.mon.ed.focus != 0 {
 		t.Errorf("the focus should go to the first bad field, got %d", m.mon.ed.focus)
 	}
 }
@@ -237,10 +245,12 @@ func TestNameAndMatchMustBeUnique(t *testing.T) {
 func TestSchedulePointsCanBeAddedEditedAndRemoved(t *testing.T) {
 	store := newStore(t)
 	m := step(t, open(t, store, &fakeClient{st: sampleStatus()}), k(tea.KeyEnter))
-	m = step(t, m, k(tea.KeyCtrlA)) // a third point, focused on its time
+	m = step(t, m, k(tea.KeyCtrlA)) // a third point (12:00, 50%), focused on its time
 	m = replace(t, m, "06:30")
-	m = down(t, m, 1)
-	m = replace(t, m, "55")
+	m = down(t, m, 1) // its level slider
+	for i := 0; i < 5; i++ {
+		m = step(t, m, k(tea.KeyRight)) // 50 -> 55
+	}
 	m = step(t, m, k(tea.KeyCtrlS))
 	pts := store.last(t).Monitors[0].Points
 	if len(pts) != 3 || pts[0].Minute != 6*60+30 || pts[0].Brightness != 55 || pts[2].Minute != 22*60 {
@@ -248,7 +258,7 @@ func TestSchedulePointsCanBeAddedEditedAndRemoved(t *testing.T) {
 	}
 	// Remove the first point (the 06:30 one is now sorted first in the config).
 	m = step(t, m, k(tea.KeyEnter))
-	m = down(t, m, 7) // first point time
+	m = down(t, m, 5) // first point time
 	m = step(t, m, k(tea.KeyCtrlD))
 	m = step(t, m, k(tea.KeyCtrlS))
 	if got := store.last(t).Monitors[0].Points; len(got) != 2 {
@@ -260,17 +270,14 @@ func TestTheScheduleNeedsAtLeastOnePointAndNoRepeatedTimes(t *testing.T) {
 	store := newStore(t)
 	m := step(t, open(t, store, &fakeClient{st: sampleStatus()}), k(tea.KeyDown)) // select Center (1 point)
 	m = step(t, m, k(tea.KeyEnter))
-	m = down(t, m, 7)
+	m = down(t, m, 5)
 	m = step(t, m, k(tea.KeyCtrlD))
 	m = step(t, m, k(tea.KeyCtrlS))
 	if !strings.Contains(m.View(), "needs at least one point") || store.saves() != 0 {
 		t.Errorf("view:\n%s", m.View())
 	}
 	m = step(t, m, k(tea.KeyCtrlA))
-	m = step(t, m, k(tea.KeyCtrlA))
-	m = replace(t, m, "12:00")
-	m = down(t, m, 2)
-	m = replace(t, m, "12:00")
+	m = step(t, m, k(tea.KeyCtrlA)) // both start at 12:00
 	m = step(t, m, k(tea.KeyCtrlS))
 	if !strings.Contains(m.View(), "already in the schedule") || store.saves() != 0 {
 		t.Errorf("view:\n%s", m.View())
@@ -408,25 +415,90 @@ func TestNightTabShowsTheCurrentSettings(t *testing.T) {
 	}
 }
 
-func TestEditTheNightWindow(t *testing.T) {
+func TestEditTheNightWindowAndWarmth(t *testing.T) {
 	store, c := newStore(t), &fakeClient{st: sampleStatus()}
 	m := step(t, nightModel(t, store, c), k(tea.KeyEnter))
-	m = down(t, m, 1) // Start
-	m = replace(t, m, "20:30")
-	m = down(t, m, 2) // Fade ramp
-	m = replace(t, m, "45m")
-	m = down(t, m, 3) // Blue
-	m = replace(t, m, "40")
+	m = down(t, m, 1) // Start 19:00
+	for i := 0; i < 6; i++ {
+		m = step(t, m, k(tea.KeyRight)) // +15 min each: 20:30
+	}
+	m = down(t, m, 2) // Fade ramp 30
+	for i := 0; i < 3; i++ {
+		m = step(t, m, k(tea.KeyRight)) // +5 each: 45
+	}
+	m = down(t, m, 1)              // Color: custom RGB (the config uses blue_gain)
+	m = step(t, m, k(tea.KeyLeft)) // -> warmth
+	if !strings.Contains(m.View(), "Warmth") || strings.Contains(m.View(), "Red %") {
+		t.Fatalf("warmth mode must hide the RGB sliders:\n%s", m.View())
+	}
+	start := atoi(m.night.ed.get("Warmth"), 0)
+	if start != kelvinForBlue(30) {
+		t.Errorf("switching to warmth should keep the color: %d K vs %d K", start, kelvinForBlue(30))
+	}
+	m = down(t, m, 1) // Warmth slider
+	m = step(t, m, k(tea.KeyRight))
 	m = step(t, m, k(tea.KeyCtrlS))
 	n := store.last(t).Night
-	if !n.Enabled || n.Start != 20*60+30 || n.Ramp.Minutes() != 45 || n.BlueGain != 40 {
+	if !n.Enabled || n.Start != 20*60+30 || n.Ramp.Minutes() != 45 || n.Temperature != start+100 {
 		t.Fatalf("night = %+v", n)
 	}
-	if m.night.ed != nil || !strings.Contains(m.View(), "20:30 -> 07:00, fade 45m") {
+	r, g, b := config.GainsForKelvin(start + 100)
+	if n.RedGain != r || n.GreenGain != g || n.BlueGain != b {
+		t.Errorf("gains must follow the temperature: %+v", n)
+	}
+	if m.night.ed != nil || !strings.Contains(m.View(), "20:30 -> 07:00, fade 45m") || !strings.Contains(m.View(), "Warmth at the peak") {
 		t.Errorf("view:\n%s", m.View())
 	}
 	if len(c.cmds) != 1 || c.cmds[0] != ipc.CmdReload {
 		t.Errorf("cmds = %v", c.cmds)
+	}
+}
+
+func TestCustomRGBModeUsesSlidersAndClearsTheTemperature(t *testing.T) {
+	cfg := parsed(t, strings.Replace(baseConfig, "blue_gain = 30", "temperature = 3000", 1))
+	store := &fakeStore{cfg: cfg}
+	m := step(t, nightModel(t, store, &fakeClient{st: sampleStatus()}), k(tea.KeyEnter))
+	m = down(t, m, 4) // Color: warmth
+	m = step(t, m, k(tea.KeyRight))
+	r, g, b := config.GainsForKelvin(3000)
+	if m.night.ed.get("Red %") != strconv.Itoa(r) || m.night.ed.get("Green %") != strconv.Itoa(g) || m.night.ed.get("Blue %") != strconv.Itoa(b) {
+		t.Fatalf("the RGB sliders should start from the warmth: %v", m.night.ed.fields)
+	}
+	m = down(t, m, 3) // Blue (Red, Green hidden? no: all three are visible)
+	m = step(t, m, shift(tea.KeyShiftLeft))
+	m = step(t, m, k(tea.KeyCtrlS))
+	n := store.last(t).Night
+	if n.Temperature != 0 || n.BlueGain != b-5 || n.RedGain != r || n.GreenGain != g {
+		t.Fatalf("night = %+v, want blue %d", n, b-5)
+	}
+}
+
+func TestMonitorNightColorModes(t *testing.T) {
+	store := newStore(t)
+	m := step(t, open(t, store, &fakeClient{st: sampleStatus()}), k(tea.KeyEnter))
+	m = down(t, m, 4) // Night color: global
+	if strings.Contains(m.View(), "Warmth") || strings.Contains(m.View(), "Red %") {
+		t.Fatalf("global hides both:\n%s", m.View())
+	}
+	m = step(t, m, k(tea.KeyLeft)) // wraps to custom RGB
+	if !strings.Contains(m.View(), "Red %") || strings.Contains(m.View(), "Warmth") {
+		t.Fatalf("custom RGB shows the three sliders:\n%s", m.View())
+	}
+	m = down(t, m, 3) // Blue
+	m = step(t, m, shift(tea.KeyShiftLeft))
+	m = step(t, m, k(tea.KeyCtrlS))
+	mon := store.last(t).Monitors[0]
+	if mon.Night.Temperature != nil || mon.Night.RedGain == nil || mon.Night.GreenGain == nil || mon.Night.BlueGain == nil || *mon.Night.BlueGain != 25 {
+		t.Fatalf("night = %+v", mon.Night)
+	}
+	// Back to global: no override is kept.
+	m = step(t, m, k(tea.KeyEnter))
+	m = down(t, m, 4)
+	m = step(t, m, k(tea.KeyLeft)) // custom RGB -> warmth
+	m = step(t, m, k(tea.KeyLeft)) // warmth -> global
+	m = step(t, m, k(tea.KeyCtrlS))
+	if got := store.last(t).Monitors[0].Night; !got.IsZero() {
+		t.Fatalf("global must clear the overrides: %+v", got)
 	}
 }
 
@@ -435,21 +507,43 @@ func TestNightFieldErrorsAndCrossFieldErrors(t *testing.T) {
 	m := step(t, nightModel(t, store, &fakeClient{st: sampleStatus()}), k(tea.KeyEnter))
 	m = down(t, m, 1)
 	m = replace(t, m, "25:99")
-	m = down(t, m, 2)
-	m = replace(t, m, "soon")
 	m = step(t, m, k(tea.KeyCtrlS))
-	for _, want := range []string{"use HH:MM, for example 21:30", "a duration such as 30m or 1h"} {
-		if !strings.Contains(m.View(), want) {
-			t.Errorf("view lacks %q:\n%s", want, m.View())
-		}
+	if !strings.Contains(m.View(), "use HH:MM, for example 21:30") || store.saves() != 0 {
+		t.Errorf("view:\n%s", m.View())
 	}
-	// Fix the fields but make start equal to end: only the whole-config check can see it.
-	m = replace(t, m, "07:00") // the focus is already on the first bad field (Start)
-	m = down(t, m, 2)
-	m = replace(t, m, "30m")
+	// Fix it, but make start equal to end: only the whole-config check can see it.
+	m = replace(t, m, "07:00")
 	m = step(t, m, k(tea.KeyCtrlS))
 	if !strings.Contains(m.View(), "start and end must differ") || store.saves() != 0 {
 		t.Errorf("view:\n%s", m.View())
+	}
+}
+
+func TestEditorsFitEightyByTwentyFourInEveryMode(t *testing.T) {
+	for _, mode := range []int{0, 1, 2} { // global, warmth, custom RGB
+		m := step(t, open(t, newStore(t), &fakeClient{st: sampleStatus()}), k(tea.KeyEnter))
+		m = down(t, m, 4)
+		for i := 0; i < mode; i++ {
+			m = step(t, m, k(tea.KeyRight))
+		}
+		for i := 0; i < 6; i++ {
+			m = step(t, m, k(tea.KeyCtrlA))
+		}
+		lines := strings.Split(m.View(), "\n")
+		if len(lines) > minHeight {
+			t.Errorf("mode %d: %d lines", mode, len(lines))
+		}
+		for _, l := range lines {
+			if w := len([]rune(stripANSI(l))); w > minWidth {
+				t.Errorf("mode %d: line %d columns wide: %q", mode, w, l)
+			}
+		}
+	}
+	m := step(t, nightModel(t, newStore(t), &fakeClient{st: sampleStatus()}), k(tea.KeyEnter))
+	for _, l := range strings.Split(m.View(), "\n") {
+		if w := len([]rune(stripANSI(l))); w > minWidth {
+			t.Errorf("night editor line %d columns wide: %q", w, l)
+		}
 	}
 }
 

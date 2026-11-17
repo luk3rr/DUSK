@@ -71,6 +71,10 @@ Controlar o modo noturno via driver direto no monitor é ruim, pois ao desligar 
 | FR-18 | CI no GitHub Actions executa `just check` e `just english-check` em push e PR. | Prática afirmada no gate 2.2. | Workflow verde no repositório. | Should | [src: gate 2.2] |
 | FR-19 | README documenta software vs DDC, TUI, migração e `reset-ddc`. | Usuários de outros PCs (M-003). | README em inglês cobre os itens. | Should | [src: M-003] |
 
+| FR-20 | O modo noturno aceita uma temperatura de cor em kelvin (`night.temperature`, 1700-6500 K; 6500 = sem mudança) que vence os ganhos RGB; por monitor, `night = { temperature = N }`. | Ajuste simples, como o Night Light do GNOME. | Dado `temperature = 3400`, os ganhos derivam da curva de corpo negro e o config volta idêntico após `Marshal`/`Parse`. | Must | [src: feedback do usuário, emenda 2026-11-17] |
+| FR-21 | A TUI usa sliders com barra para todo valor em percentual, a temperatura e a rampa (setas, passo grande com Shift/PgUp/PgDn, Home/End); horas se ajustam em passos de 15 min/1 h; só nome e match são digitados. | Digitar números é ruim. | Nenhum campo numérico aceita texto livre. | Must | [src: feedback] |
+| FR-22 | Os editores de Night e de monitor oferecem modo "warmth" (temperatura) ou "custom RGB" (três sliders) com amostra de cor ao vivo; trocar de modo preserva a cor. | RGB direto é preciso mas difícil. | Warmth→custom preenche os sliders com os ganhos da temperatura. | Must | [src: feedback] |
+
 ### Non-functional
 
 | ID | Category | Measurable target | Verification | Source |

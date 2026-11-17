@@ -177,16 +177,14 @@ func (m Model) monitorsKey(k tea.KeyMsg) (Model, tea.Cmd) {
 		}
 	case "enter":
 		if n > 0 {
-			f := monitorForm(m.cfg, m.cfg.Monitors[m.mon.cursor], m.mon.cursor)
-			m.mon.ed, m.mon.edIndex = &f, m.mon.cursor
+			m.mon.ed, m.mon.edIndex = monitorForm(m.cfg, m.cfg.Monitors[m.mon.cursor], m.mon.cursor), m.mon.cursor
 		}
 	case "a":
 		name, match := "", ""
 		if s, ok := m.unconfiguredScreen(); ok {
 			name, match = orDefault(s.Product, s.Name), s.Key()
 		}
-		f := monitorForm(m.cfg, newMonitor(name, match), -1)
-		m.mon.ed, m.mon.edIndex = &f, -1
+		m.mon.ed, m.mon.edIndex = monitorForm(m.cfg, newMonitor(name, match), -1), -1
 	case "d":
 		if n > 0 {
 			m.mon.deleting = true
@@ -265,8 +263,7 @@ func hasPoint(f *form) bool {
 func (m Model) nightKey(k tea.KeyMsg) (Model, tea.Cmd) {
 	if m.night.ed == nil {
 		if k.String() == "enter" && m.cfg != nil {
-			f := nightForm(m.cfg.Night)
-			m.night.ed = &f
+			m.night.ed = nightForm(m.cfg.Night)
 		}
 		return m, nil
 	}
@@ -326,18 +323,22 @@ func (m Model) monitorsBody() string {
 	}
 	if m.mon.ed != nil {
 		return titleStyle.Render(m.mon.ed.title) + "\n" + m.mon.ed.render(m.width, m.height-9, true) +
-			"\n" + dimStyle.Render("Ctrl+S save   Esc cancel   Tab next field   Ctrl+A add point   Ctrl+D delete point")
+			"\n" + dimStyle.Render("Up/Down field  Left/Right adjust  Shift+Left/Right big step  Ctrl+S save\nCtrl+A add schedule point  Ctrl+D delete point  Esc cancel")
 	}
 	var buf bytes.Buffer
 	w := tabwriter.NewWriter(&buf, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "  Name\tMatch\tBrightness\tPoints\tNight R G B")
+	fmt.Fprintln(w, "  Name\tMatch\tBrightness\tPoints\tNight color")
 	for i, mon := range m.cfg.Monitors {
 		cur := "  "
 		if i == m.mon.cursor {
 			cur = "> "
 		}
 		nm := mon.NightFor(m.cfg.Night)
-		fmt.Fprintf(w, "%s%s\t%s\t%s\t%d\t%d %d %d\n", cur, mon.Name, mon.Match, mon.Brightness, len(mon.Points), nm.RedGain, nm.GreenGain, nm.BlueGain)
+		color := fmt.Sprintf("R%d G%d B%d", nm.RedGain, nm.GreenGain, nm.BlueGain)
+		if nm.Temperature > 0 {
+			color = fmt.Sprintf("%d K", nm.Temperature)
+		}
+		fmt.Fprintf(w, "%s%s\t%s\t%s\t%d\t%s\n", cur, mon.Name, mon.Match, mon.Brightness, len(mon.Points), color)
 	}
 	w.Flush()
 	out := strings.TrimRight(buf.String(), "\n")
@@ -359,7 +360,7 @@ func (m Model) nightBody() string {
 	}
 	if m.night.ed != nil {
 		return titleStyle.Render(m.night.ed.title) + "\n" + m.night.ed.render(m.width, m.height-9, true) +
-			"\n" + dimStyle.Render("Ctrl+S save   Esc cancel   Tab next field   Left/Right change on/off")
+			"\n" + dimStyle.Render("Up/Down field  Left/Right adjust  Shift+Left/Right big step  Home/End min/max\nCtrl+S save   Esc cancel")
 	}
 	n := m.cfg.Night
 	var b strings.Builder
@@ -368,7 +369,12 @@ func (m Model) nightBody() string {
 	} else {
 		fmt.Fprintf(&b, "Night mode is on: %s -> %s, fade %s\n", config.FormatClock(n.Start), config.FormatClock(n.End), config.FormatDuration(orRamp(n.Ramp)))
 	}
-	fmt.Fprintf(&b, "Color at the peak (percent of full): R %d  G %d  B %d\n", n.RedGain, n.GreenGain, n.BlueGain)
+	if n.Temperature > 0 {
+		fmt.Fprintf(&b, "Warmth at the peak: %d K  %s  R %d  G %d  B %d\n", n.Temperature, swatch(n.RedGain, n.GreenGain, n.BlueGain), n.RedGain, n.GreenGain, n.BlueGain)
+		b.WriteString(bar(n.Temperature, config.MinKelvin, config.NeutralKelvin, sliderWidth) + "  " + dimStyle.Render(hintWarmth) + "\n")
+	} else {
+		fmt.Fprintf(&b, "Color at the peak (custom RGB): %s  R %d  G %d  B %d\n", swatch(n.RedGain, n.GreenGain, n.BlueGain), n.RedGain, n.GreenGain, n.BlueGain)
+	}
 	b.WriteString("\n" + dimStyle.Render("Enter edit"))
 	return b.String()
 }

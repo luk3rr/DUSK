@@ -37,9 +37,13 @@ func Marshal(cfg *Config, notes map[string]string) []byte {
 		b.WriteString("enabled    = false\n")
 	}
 	fmt.Fprintf(&b, "ramp       = %s # how long the fade in and the fade out take\n", tomlString(FormatDuration(ramp)))
-	fmt.Fprintf(&b, "blue_gain  = %d # percent of the original blue at the peak (lower is warmer)\n", n.BlueGain)
-	fmt.Fprintf(&b, "red_gain   = %d\n", n.RedGain)
-	fmt.Fprintf(&b, "green_gain = %d\n", n.GreenGain)
+	if n.Temperature > 0 {
+		fmt.Fprintf(&b, "temperature = %d # color temperature in kelvin at the peak (%d = no change, lower is warmer); it replaces the gains below\n", n.Temperature, NeutralKelvin)
+	} else {
+		fmt.Fprintf(&b, "blue_gain  = %d # percent of the original blue at the peak (lower is warmer)\n", n.BlueGain)
+		fmt.Fprintf(&b, "red_gain   = %d\n", n.RedGain)
+		fmt.Fprintf(&b, "green_gain = %d\n", n.GreenGain)
+	}
 
 	for _, m := range cfg.Monitors {
 		if m.Brightness == "" { // not normalized by Parse: use the defaults
@@ -65,7 +69,7 @@ func Marshal(cfg *Config, notes map[string]string) []byte {
 			for _, kv := range []struct {
 				k string
 				v *int
-			}{{"blue_gain", m.Night.BlueGain}, {"red_gain", m.Night.RedGain}, {"green_gain", m.Night.GreenGain}} {
+			}{{"temperature", m.Night.Temperature}, {"blue_gain", m.Night.BlueGain}, {"red_gain", m.Night.RedGain}, {"green_gain", m.Night.GreenGain}} {
 				if kv.v != nil {
 					parts = append(parts, fmt.Sprintf("%s = %d", kv.k, *kv.v))
 				}

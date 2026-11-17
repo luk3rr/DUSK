@@ -104,15 +104,80 @@ func problems(err error) string {
 
 // ---- monitor editor ----
 
+const (
+	colorGlobal = "global"
+	colorWarmth = "warmth"
+	colorCustom = "custom RGB"
+	defaultWarm = 3400
+	rampMinutes = 5
+	rampMaxMin  = 180
+	hintWarmth  = "6500 K = no change, lower is warmer"
+)
+
+func percentSlider(label string, v int) field {
+	return field{label: label, group: -1, kind: kindSlider, value: strconv.Itoa(v), min: 0, max: 100, step: 1, big: 5, unit: "%"}
+}
+
+func warmthSlider(k int) field {
+	return field{label: "Warmth", group: -1, kind: kindSlider, value: strconv.Itoa(k),
+		min: config.MinKelvin, max: config.NeutralKelvin, step: 100, big: 500, unit: "K"}
+}
+
 func pointFields(i int, p config.Point) []field {
+	lvl := percentSlider(fmt.Sprintf("Point %d level %%", i+1), p.Brightness)
+	lvl.group = i
 	return []field{
-		{label: fmt.Sprintf("Point %d time", i+1), group: i, hint: "HH:MM", value: config.FormatClock(p.Minute), validate: vClock},
-		{label: fmt.Sprintf("Point %d level %%", i+1), group: i, hint: "0-100", value: strconv.Itoa(p.Brightness), validate: vPercent},
+		{label: fmt.Sprintf("Point %d time", i+1), group: i, kind: kindTime, hint: "HH:MM", value: config.FormatClock(p.Minute), validate: vClock},
+		lvl,
 	}
 }
 
+// kelvinForBlue finds the temperature whose blue gain is closest to b percent.
+func kelvinForBlue(b int) int {
+	best, bestD := defaultWarm, 1000
+	for k := config.MinKelvin; k <= config.NeutralKelvin; k += 100 {
+		_, _, kb := config.GainsForKelvin(k)
+		if d := abs(kb - b); d < bestD {
+			best, bestD = k, d
+		}
+	}
+	return best
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+// colorFields builds the warmth slider and the three RGB sliders, shown according to the mode field.
+// modeLabel is the label of the choice that decides which ones are visible.
+func colorFields(f *form, modeLabel string, warm int, r, g, b int) []field {
+	showWarm := func() bool { return f.get(modeLabel) != colorWarmth }
+	showRGB := func() bool { return f.get(modeLabel) != colorCustom }
+	preview := func() string {
+		var rr, gg, bb int
+		if f.get(modeLabel) == colorWarmth {
+			rr, gg, bb = config.GainsForKelvin(atoi(f.get("Warmth"), defaultWarm))
+		} else {
+			rr, gg, bb = atoi(f.get("Red %"), 100), atoi(f.get("Green %"), 100), atoi(f.get("Blue %"), 100)
+		}
+		return fmt.Sprintf("preview %s  R %d  G %d  B %d", swatch(rr, gg, bb), rr, gg, bb)
+	}
+	w := warmthSlider(warm)
+	w.hide = showWarm
+	w.extra = func() string { return dimStyle.Render(hintWarmth) + "\n" + preview() }
+	red, green, blue := percentSlider("Red %", r), percentSlider("Green %", g), percentSlider("Blue %", b)
+	for _, fl := range []*field{&red, &green, &blue} {
+		fl.hide = showRGB
+	}
+	blue.extra = preview
+	return []field{w, red, green, blue}
+}
+
 // monitorForm builds the editor for mon. index is the monitor's position in cfg, or -1 for a new one.
-func monitorForm(cfg *config.Config, mon config.Monitor, index int) form {
+func monitorForm(cfg *config.Config, mon config.Monitor, index int) *form {
 	names, matches := map[string]bool{}, map[string]bool{}
 	for i, m := range cfg.Monitors {
 		if i != index {
@@ -124,20 +189,65 @@ func monitorForm(cfg *config.Config, mon config.Monitor, index int) form {
 	if index < 0 {
 		title = "New monitor"
 	}
-	f := form{title: title, dirty: index < 0}
+	f := &form{title: title, dirty: index < 0}
+	mode := colorGlobal
+	eff := mon.NightFor(cfg.Night)
+	warm := defaultWarm
+	switch {
+	case mon.Night.Temperature != nil:
+		mode, warm = colorWarmth, *mon.Night.Temperature
+	case mon.Night.RedGain != nil || mon.Night.GreenGain != nil || mon.Night.BlueGain != nil:
+		mode = colorCustom
+		warm = kelvinForBlue(eff.BlueGain)
+	case cfg.Night.Temperature > 0:
+		warm = cfg.Night.Temperature
+	default:
+		warm = kelvinForBlue(cfg.Night.BlueGain)
+	}
+	floor := percentSlider("Floor %", mon.Floor)
+	floor.max, floor.big = config.MaxFloor, 5
 	f.fields = []field{
 		{label: "Name", group: -1, value: mon.Name, validate: vUnique("name", names)},
 		{label: "Match", group: -1, value: mon.Match, hint: `"model" or "model#serial"`, validate: vUnique("match", matches)},
 		{label: "Brightness", group: -1, kind: kindChoice, value: orDefault(mon.Brightness, config.BrightnessSoftware), choices: []string{config.BrightnessSoftware, config.BrightnessDDC}},
-		{label: "Floor %", group: -1, value: strconv.Itoa(mon.Floor), hint: "0-50", validate: vFloor},
-		{label: "Night red %", group: -1, value: ptrText(mon.Night.RedGain), hint: "empty = global", validate: vOptPercent},
-		{label: "Night green %", group: -1, value: ptrText(mon.Night.GreenGain), hint: "empty = global", validate: vOptPercent},
-		{label: "Night blue %", group: -1, value: ptrText(mon.Night.BlueGain), hint: "empty = global", validate: vOptPercent},
+		floor,
+		{label: "Night color", group: -1, kind: kindChoice, value: mode, choices: []string{colorGlobal, colorWarmth, colorCustom}},
 	}
+	f.fields = append(f.fields, colorFields(f, "Night color", warm, eff.RedGain, eff.GreenGain, eff.BlueGain)...)
+	// The three sliders and the warmth slider follow the choice; "global" hides all of them.
+	for i := range f.fields {
+		if f.fields[i].label == "Warmth" || strings.HasSuffix(f.fields[i].label, " %") && strings.Contains("Red % Green % Blue %", f.fields[i].label) {
+			prev := f.fields[i].hide
+			f.fields[i].hide = func() bool { return f.get("Night color") == colorGlobal || prev() }
+		}
+	}
+	for i := range f.fields {
+		if f.fields[i].label == "Night color" {
+			f.fields[i].onChange = func() { f.switchColorMode("Night color") }
+		}
+	}
+	f.lastMode = mode
 	for i, p := range mon.Points {
 		f.fields = append(f.fields, pointFields(i, p)...)
 	}
 	return f
+}
+
+// switchColorMode keeps the color the user sees when the mode changes: moving from
+// warmth to custom RGB fills the sliders from the temperature, and the other way
+// picks the temperature closest to the blue slider. From "global" nothing changes.
+func (f *form) switchColorMode(modeLabel string) {
+	prev, now := f.lastMode, f.get(modeLabel)
+	f.lastMode = now
+	switch {
+	case now == colorCustom && prev == colorWarmth:
+		r, g, b := config.GainsForKelvin(atoi(f.get("Warmth"), defaultWarm))
+		f.set("Red %", strconv.Itoa(r))
+		f.set("Green %", strconv.Itoa(g))
+		f.set("Blue %", strconv.Itoa(b))
+	case now == colorWarmth && prev == colorCustom:
+		f.set("Warmth", strconv.Itoa(kelvinForBlue(atoi(f.get("Blue %"), 100))))
+	}
 }
 
 func orDefault(v, def string) string {
@@ -172,7 +282,6 @@ func (f *form) deletePoint() {
 			kept = append(kept, fl)
 		}
 	}
-	// Renumber labels and groups.
 	next := -1
 	last := -2
 	for i := range kept {
@@ -202,11 +311,14 @@ func monitorFromForm(f *form) config.Monitor {
 		Match:      f.get("Match"),
 		Brightness: f.get("Brightness"),
 		Floor:      atoi(f.get("Floor %"), config.DefaultFloor),
-		Night: config.MonitorNight{
-			RedGain:   optPtr(f.get("Night red %")),
-			GreenGain: optPtr(f.get("Night green %")),
-			BlueGain:  optPtr(f.get("Night blue %")),
-		},
+	}
+	switch f.get("Night color") {
+	case colorWarmth:
+		k := atoi(f.get("Warmth"), defaultWarm)
+		mon.Night.Temperature = &k
+	case colorCustom:
+		r, g, b := atoi(f.get("Red %"), 100), atoi(f.get("Green %"), 100), atoi(f.get("Blue %"), 100)
+		mon.Night.RedGain, mon.Night.GreenGain, mon.Night.BlueGain = &r, &g, &b
 	}
 	byGroup := map[int]*config.Point{}
 	var order []int
@@ -260,22 +372,35 @@ func (f *form) duplicateTimes() bool {
 
 // ---- night editor ----
 
-func nightForm(n config.Night) form {
+func nightForm(n config.Night) *form {
 	on := "off"
 	if n.Enabled {
 		on = "on"
 	}
-	f := form{title: "Night mode"}
+	f := &form{title: "Night mode"}
+	mode, warm := colorCustom, kelvinForBlue(n.BlueGain)
+	if n.Temperature > 0 {
+		mode, warm = colorWarmth, n.Temperature
+	}
+	ramp := percentSlider("Fade ramp", int(orRamp(n.Ramp).Minutes()))
+	ramp.min, ramp.max, ramp.step, ramp.big, ramp.unit = rampMinutes, rampMaxMin, 5, 30, "min"
 	f.fields = []field{
 		{label: "Night mode", group: -1, kind: kindChoice, value: on, choices: []string{"on", "off"}},
-		{label: "Start", group: -1, value: config.FormatClock(n.Start), hint: "HH:MM"},
-		{label: "End", group: -1, value: config.FormatClock(n.End), hint: "HH:MM"},
-		{label: "Fade ramp", group: -1, value: config.FormatDuration(orRamp(n.Ramp)), hint: "30m"},
-		{label: "Red %", group: -1, value: strconv.Itoa(n.RedGain), hint: "0-100", validate: vPercent},
-		{label: "Green %", group: -1, value: strconv.Itoa(n.GreenGain), hint: "0-100", validate: vPercent},
-		{label: "Blue %", group: -1, value: strconv.Itoa(n.BlueGain), hint: "0-100", validate: vPercent},
+		{label: "Start", group: -1, kind: kindTime, value: config.FormatClock(n.Start), hint: "HH:MM", validate: vClock},
+		{label: "End", group: -1, kind: kindTime, value: config.FormatClock(n.End), hint: "HH:MM", validate: vClock},
+		ramp,
+		{label: "Color", group: -1, kind: kindChoice, value: mode, choices: []string{colorWarmth, colorCustom}},
 	}
-	setNightValidators(&f)
+	f.fields = append(f.fields, colorFields(f, "Color", warm, n.RedGain, n.GreenGain, n.BlueGain)...)
+	f.lastMode = mode
+	for i := range f.fields {
+		switch f.fields[i].label {
+		case "Color":
+			f.fields[i].onChange = func() { f.switchColorMode("Color") }
+		case "Start", "End":
+			f.fields[i].validate = f.requireWhileOn(vClock)
+		}
+	}
 	return f
 }
 
@@ -286,23 +411,13 @@ func orRamp(d time.Duration) time.Duration {
 	return d
 }
 
-// setNightValidators makes start, end and ramp required only while night mode is on.
-func setNightValidators(f *form) {
-	req := func(check func(string) error) func(string) error {
-		return func(v string) error {
-			if f.get("Night mode") == "off" {
-				return nil
-			}
-			return check(v)
+// requireWhileOn applies check only while night mode is on (the times mean nothing otherwise).
+func (f *form) requireWhileOn(check func(string) error) func(string) error {
+	return func(v string) error {
+		if f.get("Night mode") == "off" {
+			return nil
 		}
-	}
-	for i := range f.fields {
-		switch f.fields[i].label {
-		case "Start", "End":
-			f.fields[i].validate = req(vClock)
-		case "Fade ramp":
-			f.fields[i].validate = req(vDuration)
-		}
+		return check(v)
 	}
 }
 
@@ -312,11 +427,17 @@ func nightFromForm(f *form, base config.Night) config.Night {
 	if n.Enabled {
 		n.Start, _ = config.ParseClock(strings.TrimSpace(f.get("Start")))
 		n.End, _ = config.ParseClock(strings.TrimSpace(f.get("End")))
-		n.Ramp, _ = time.ParseDuration(strings.TrimSpace(f.get("Fade ramp")))
+		n.Ramp = time.Duration(atoi(f.get("Fade ramp"), 30)) * time.Minute
 	}
-	n.RedGain = atoi(f.get("Red %"), 100)
-	n.GreenGain = atoi(f.get("Green %"), 100)
-	n.BlueGain = atoi(f.get("Blue %"), config.DefaultBlueGain)
+	if f.get("Color") == colorWarmth {
+		n.Temperature = atoi(f.get("Warmth"), defaultWarm)
+		n.RedGain, n.GreenGain, n.BlueGain = config.GainsForKelvin(n.Temperature)
+	} else {
+		n.Temperature = 0
+		n.RedGain = atoi(f.get("Red %"), 100)
+		n.GreenGain = atoi(f.get("Green %"), 100)
+		n.BlueGain = atoi(f.get("Blue %"), config.DefaultBlueGain)
+	}
 	return n
 }
 
@@ -330,9 +451,10 @@ func defaultConfig(screens []gamma.Output) *config.Config {
 		VerifyInterval: config.DefaultVerifyInterval,
 		Night: config.Night{
 			Enabled: true, Start: 21 * 60, End: 7 * 60, Ramp: config.DefaultRamp,
-			BlueGain: config.DefaultBlueGain, RedGain: 100, GreenGain: 100,
+			Temperature: defaultWarm,
 		},
 	}
+	cfg.Night.RedGain, cfg.Night.GreenGain, cfg.Night.BlueGain = config.GainsForKelvin(defaultWarm)
 	used := map[string]bool{}
 	for _, s := range screens {
 		name := orDefault(s.Product, s.Name)

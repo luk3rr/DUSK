@@ -57,6 +57,10 @@ type Night struct {
 	BlueGain  int
 	RedGain   int
 	GreenGain int
+	// Temperature, when not zero, is the color temperature in kelvin of night mode at its
+	// peak. It takes precedence over RedGain, GreenGain and BlueGain, which Parse then
+	// derives from it.
+	Temperature int
 }
 
 // Monitor ties a monitor (by Match) to its brightness schedule.
@@ -78,16 +82,23 @@ type MonitorNight struct {
 	BlueGain  *int
 	RedGain   *int
 	GreenGain *int
+	// Temperature, when set, replaces the global color with this temperature in kelvin;
+	// explicit gains are applied on top of it.
+	Temperature *int
 }
 
 // IsZero reports whether nothing is overridden.
 func (n MonitorNight) IsZero() bool {
-	return n.BlueGain == nil && n.RedGain == nil && n.GreenGain == nil
+	return n.BlueGain == nil && n.RedGain == nil && n.GreenGain == nil && n.Temperature == nil
 }
 
 // NightFor returns base with this monitor's color-gain overrides applied. The
 // window, ramp always come from base.
 func (m Monitor) NightFor(base Night) Night {
+	if m.Night.Temperature != nil {
+		base.Temperature = *m.Night.Temperature
+		base.RedGain, base.GreenGain, base.BlueGain = GainsForKelvin(base.Temperature)
+	}
 	if m.Night.BlueGain != nil {
 		base.BlueGain = *m.Night.BlueGain
 	}
@@ -124,14 +135,15 @@ type rawConfig struct {
 }
 
 type rawNight struct {
-	Enabled   *bool  `toml:"enabled"`
-	Start     string `toml:"start"`
-	End       string `toml:"end"`
-	Ramp      string `toml:"ramp"`
-	BlueGain  *int   `toml:"blue_gain"`
-	RedGain   *int   `toml:"red_gain"`
-	GreenGain *int   `toml:"green_gain"`
-	Fallback  string `toml:"fallback"`
+	Enabled     *bool  `toml:"enabled"`
+	Start       string `toml:"start"`
+	End         string `toml:"end"`
+	Ramp        string `toml:"ramp"`
+	BlueGain    *int   `toml:"blue_gain"`
+	RedGain     *int   `toml:"red_gain"`
+	GreenGain   *int   `toml:"green_gain"`
+	Fallback    string `toml:"fallback"`
+	Temperature *int   `toml:"temperature"`
 }
 
 type rawMonitor struct {
@@ -144,9 +156,10 @@ type rawMonitor struct {
 }
 
 type rawMonitorNight struct {
-	BlueGain  *int `toml:"blue_gain"`
-	RedGain   *int `toml:"red_gain"`
-	GreenGain *int `toml:"green_gain"`
+	BlueGain    *int `toml:"blue_gain"`
+	RedGain     *int `toml:"red_gain"`
+	GreenGain   *int `toml:"green_gain"`
+	Temperature *int `toml:"temperature"`
 }
 
 type rawPoint struct {
@@ -273,6 +286,18 @@ func (v *validator) optPercent(field string, p *int) *int {
 	return &n
 }
 
+func (v *validator) optKelvin(field string, p *int) *int {
+	if p == nil {
+		return nil
+	}
+	if *p < MinKelvin || *p > NeutralKelvin {
+		v.addf("%s: %d is outside %d-%d", field, *p, MinKelvin, NeutralKelvin)
+		return nil
+	}
+	n := *p
+	return &n
+}
+
 func (v *validator) night(r *rawNight) Night {
 	n := Night{
 		Ramp:      DefaultRamp,
@@ -288,6 +313,14 @@ func (v *validator) night(r *rawNight) Night {
 	n.BlueGain = v.percent("night.blue_gain", r.BlueGain, DefaultBlueGain)
 	n.RedGain = v.percent("night.red_gain", r.RedGain, 100)
 	n.GreenGain = v.percent("night.green_gain", r.GreenGain, 100)
+	if r.Temperature != nil {
+		if k := *r.Temperature; k < MinKelvin || k > NeutralKelvin {
+			v.addf("night.temperature: %d is outside %d-%d", k, MinKelvin, NeutralKelvin)
+		} else {
+			n.Temperature = k
+			n.RedGain, n.GreenGain, n.BlueGain = GainsForKelvin(k)
+		}
+	}
 	if !n.Enabled {
 		return n
 	}
@@ -354,9 +387,10 @@ func (v *validator) monitors(raws []rawMonitor) []Monitor {
 		}
 		if r.Night != nil {
 			m.Night = MonitorNight{
-				BlueGain:  v.optPercent(field+".night.blue_gain", r.Night.BlueGain),
-				RedGain:   v.optPercent(field+".night.red_gain", r.Night.RedGain),
-				GreenGain: v.optPercent(field+".night.green_gain", r.Night.GreenGain),
+				BlueGain:    v.optPercent(field+".night.blue_gain", r.Night.BlueGain),
+				RedGain:     v.optPercent(field+".night.red_gain", r.Night.RedGain),
+				GreenGain:   v.optPercent(field+".night.green_gain", r.Night.GreenGain),
+				Temperature: v.optKelvin(field+".night.temperature", r.Night.Temperature),
 			}
 		}
 		if len(r.Points) == 0 {

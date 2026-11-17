@@ -56,9 +56,14 @@ Run `dusk` (or `dusk setup`) in a terminal. It needs at least 80x24.
 | Tab | What you do there |
 |---|---|
 | 1 Status | Live view, refreshed every second: brightness now and target, the color applied to each screen, the night phase, warnings. `p` pauses or resumes, `r` reloads the configuration. |
-| 2 Monitors | Select a monitor with the arrows, `Enter` to edit it, `a` to add one, `d` to delete it. The editor has the name, the match, the brightness backend (`software` or `ddc`), the floor, the night color level and the schedule (`Ctrl+A` adds a point, `Ctrl+D` removes one). `Ctrl+S` saves, `Esc` cancels. |
-| 3 Night | Turn night mode on or off and set the start, the end, the fade ramp and the default color level. |
+| 2 Monitors | Select a monitor with the arrows, `Enter` to edit it, `a` to add one, `d` to delete it. The editor has the name, the match, the brightness backend (`software` or `ddc`), the floor, the night color (global, a warmth of its own, or custom RGB) and the schedule (`Ctrl+A` adds a point, `Ctrl+D` removes one). `Ctrl+S` saves, `Esc` cancels. |
+| 3 Night | Turn night mode on or off and set the start, the end, the fade ramp and the color: a **warmth** slider in kelvin (6500 K = no change, lower is warmer, like GNOME's Night Light) or, if you prefer, three RGB sliders. A swatch shows the resulting color. |
 | 4 Service | `i` install, `u` uninstall, `s` start, `x` stop, `l` the log, `d` restore the colors an older dusk left in the monitors. |
+
+Percentages, the warmth, the fade ramp and the schedule levels are sliders: `Left`/`Right` move one
+step, `Shift+Left`/`Shift+Right` (or `PgUp`/`PgDn`) a bigger one, `Home`/`End` jump to the ends. Times
+(`HH:MM`) can be typed or moved with `Left`/`Right` (15 minutes) and `Shift+Left`/`Shift+Right` (1 hour).
+Names and matches are the only fields you type.
 
 Every field is checked as you save and the message appears under the field. Nothing invalid is ever
 written: the file is validated, the old one is kept next to it as `config.toml.bak-<time>`, and the
@@ -100,16 +105,16 @@ enabled    = true
 start      = "21:00"      # the fade in starts here...
 end        = "07:00"      # ...and the fade out starts here
 ramp       = "30m"        # how long each fade takes
-blue_gain  = 60           # percent of full blue at the peak (lower is warmer)
-red_gain   = 100
-green_gain = 100
+temperature = 3400        # color temperature at the peak, 1700-6500 K (6500 = no change, lower is warmer)
+# Instead of a temperature you can set the gains of each channel, in percent of full:
+# blue_gain = 60  /  red_gain = 100  /  green_gain = 100   (the temperature wins when both are present)
 
 [[monitor]]
 name       = "desk"
 match      = "MODEL-27#SERIAL1" # "model" or "model#serial", as shown by `dusk list`
 brightness = "software"         # "software" (default) or "ddc"
 floor      = 10                 # lowest software brightness in percent (0-50)
-night = { blue_gain = 45 }      # optional: this monitor's own night color level
+night = { temperature = 3000 }  # optional: this monitor's own night color (or blue_gain/red_gain/green_gain)
 points = [
   { time = "08:00", brightness = 70 },
   { time = "18:00", brightness = 50 },
@@ -121,7 +126,7 @@ points = [
   moving toward the first point of the next day.
 - A screen is matched by its model, optionally with its serial number, so moving the cable to another
   port does not break the configuration. Screens that are not listed are never touched.
-- Every monitor can have its own night color level. A value you leave out is inherited from
+- Every monitor can have its own night color, a temperature or gains. What you leave out is inherited from
   `[night]`. The window and the ramp always stay global so every screen warms up together.
 - An older `fallback = "auto"` key is still accepted but ignored (with a warning): the desktop night
   light is no longer used, every screen is handled by dusk itself.
