@@ -195,13 +195,3 @@ just uninstall      # or `dusk uninstall`
 ```
 
 The service is stopped and removed; the configuration is kept.
-
-## Development
-
-```sh
-just check          # gofmt, go vet and go test -race: the same command CI runs
-just english-check  # the repository is written in English (no non-ASCII outside author headers)
-```
-
-The tests never touch a monitor, the D-Bus session or a real terminal: the gamma backend, DDC, the
-service manager and the daemon are all behind small interfaces with fakes.
