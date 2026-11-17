@@ -12,10 +12,9 @@ import (
 	"dusk/internal/config"
 	"dusk/internal/controller"
 	"dusk/internal/ddc"
+	"dusk/internal/gamma"
 	"dusk/internal/ipc"
 	"dusk/internal/monitors"
-	"dusk/internal/nightlight"
-	"dusk/internal/state"
 )
 
 // Params are the daemon's inputs. Everything that touches the machine is
@@ -23,9 +22,8 @@ import (
 type Params struct {
 	ConfigPath string
 	SocketPath string
-	StatePath  string
-	DDC        ddc.Runner // runs ddcutil
-	Gsettings  ddc.Runner // runs gsettings; nil means no night-light backend
+	DDC        ddc.Runner    // runs ddcutil (only used by monitors with brightness = "ddc")
+	Gamma      gamma.Backend // software color; nil means no backend
 	Log        *slog.Logger
 }
 
@@ -68,17 +66,8 @@ func (d *Daemon) Handle(_ context.Context, req ipc.Request) (ipc.Response, func(
 }
 
 func toIPC(s controller.Status, configPath string) *ipc.Status {
-	rgb := func(r *controller.RGB) *ipc.RGB {
-		if r == nil {
-			return nil
-		}
-		return &ipc.RGB{R: r.R, G: r.G, B: r.B}
-	}
 	nm := s.NightMode
-	night := ipc.NightStatus{
-		Enabled: nm.Enabled, Ramp: config.FormatDuration(nm.Ramp), Phase: string(nm.Phase),
-		Fallback: nm.Fallback, FallbackActive: nm.FallbackActive, FallbackKelvin: nm.FallbackKelvin,
-	}
+	night := ipc.NightStatus{Enabled: nm.Enabled, Ramp: config.FormatDuration(nm.Ramp), Phase: string(nm.Phase)}
 	if nm.Enabled {
 		night.Start, night.End = config.FormatClock(nm.Start), config.FormatClock(nm.End)
 	}
@@ -89,13 +78,15 @@ func toIPC(s controller.Status, configPath string) *ipc.Status {
 		Paused: s.Paused, Night: s.Night, NightMode: night, Config: configPath,
 		PollInterval: config.FormatDuration(s.PollInterval), RescanInterval: config.FormatDuration(s.RescanInterval),
 		VerifyInterval: config.FormatDuration(s.VerifyInterval),
+		Warnings:       append([]string{}, s.Warnings...),
 		Monitors:       []ipc.MonitorStatus{},
 	}
 	for _, m := range s.Monitors {
 		ms := ipc.MonitorStatus{
-			Name: m.Name, Key: m.Key, Bus: m.Bus, Current: m.Current, Target: m.Target,
+			Name: m.Name, Key: m.Key, Output: m.Output, Bus: m.Bus, DDC: m.DDC,
+			BrightnessBackend: m.Backend, Floor: m.Floor, Current: m.Current, Target: m.Target,
+			Gamma: ipc.RGB{R: m.Gamma.R, G: m.Gamma.G, B: m.Gamma.B}, Scale: m.Scale,
 			Online: m.Online, Fails: m.Fails, LastError: m.LastError,
-			ColorControl: m.ColorControl, RGB: rgb(m.RGB), RGBTarget: rgb(m.RGBTarget), RGBOriginal: rgb(m.RGBOriginal),
 			NightLevel: ipc.RGB{R: m.NightLevel.R, G: m.NightLevel.G, B: m.NightLevel.B}, OwnLevel: m.OwnLevel,
 			Schedule: []ipc.SchedulePoint{},
 		}
@@ -109,7 +100,7 @@ func toIPC(s controller.Status, configPath string) *ipc.Status {
 
 // Run loads the configuration, serves the control socket and runs the
 // controller until ctx is canceled or a stop command arrives. On the way out
-// the controller restores the monitors' original RGB gains and the night light.
+// the controller puts the screens back to their normal colors.
 func Run(ctx context.Context, p Params) error {
 	log := p.Log
 	if log == nil {
@@ -126,24 +117,13 @@ func Run(ctx context.Context, p Params) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	var night nightlight.Backend
-	if p.Gsettings != nil {
-		if b, err := nightlight.Detect(ctx, p.Gsettings); err != nil {
-			log.Info("no night-light backend", "reason", err)
-		} else {
-			night = b
-			log.Info("night-light backend detected: GNOME")
-		}
-	}
-
 	ctl := controller.New(controller.Options{
 		Config: cfg,
+		Gamma:  p.Gamma,
 		Discover: func(ctx context.Context) ([]ddc.Display, error) {
 			return monitors.Discover(ctx, p.DDC)
 		},
-		Night: night,
-		Store: &state.Store{Path: p.StatePath},
-		Log:   log,
+		Log: log,
 	})
 	d := &Daemon{ConfigPath: p.ConfigPath, Ctl: ctl, LoadConfig: config.Load, Stop: cancel, Log: log}
 

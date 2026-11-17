@@ -1,0 +1,30 @@
+# Config written by dusk before software color existed (serials are made up).
+poll_interval   = "30s"
+rescan_interval = "30m"
+verify_interval = "5m"
+
+[night]
+enabled    = true
+start      = "19:00"
+end        = "07:00"
+ramp       = "30m"
+blue_gain  = 30
+red_gain   = 100
+green_gain = 100
+fallback   = "auto"
+
+[[monitor]]
+name  = "Right"
+match = "24G4#SN-AOC-0001"
+night = { blue_gain = 30, red_gain = 100, green_gain = 80 }
+points = [
+  { time = "08:00", brightness = 30 },
+  { time = "22:00", brightness = 15 },
+]
+
+[[monitor]]
+name  = "Center"
+match = "LG ULTRAWIDE"
+points = [
+  { time = "08:00", brightness = 40 },
+]

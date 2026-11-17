@@ -60,35 +60,37 @@ type SchedulePoint struct {
 
 // MonitorStatus describes one monitor in a status reply.
 type MonitorStatus struct {
-	Name      string `json:"name"`
-	Key       string `json:"key"`
-	Bus       int    `json:"bus"`
-	Current   int    `json:"current"`
-	Target    int    `json:"target"`
+	Name   string `json:"name"`
+	Key    string `json:"key"`
+	Output string `json:"output"` // connector, for example "DP-1"
+	Bus    int    `json:"bus"`    // DDC bus, 0 without DDC
+	DDC    bool   `json:"ddc"`
+
+	BrightnessBackend string `json:"brightness_backend"` // "software" or "ddc"
+	Floor             int    `json:"floor"`
+	Current           int    `json:"current"`
+	Target            int    `json:"target"`
+
+	Gamma RGB `json:"gamma"` // color gain applied now, percent
+	Scale int `json:"scale"` // brightness scale applied now, percent
+
 	Online    bool   `json:"online"`
 	Fails     int    `json:"fails"`
 	LastError string `json:"last_error"`
 
-	ColorControl bool            `json:"color_control"`
-	RGB          *RGB            `json:"rgb,omitempty"`          // last gains read from the monitor
-	RGBTarget    *RGB            `json:"rgb_target,omitempty"`   // where night mode is taking them
-	RGBOriginal  *RGB            `json:"rgb_original,omitempty"` // saved before dusk changed anything
-	NightLevel   RGB             `json:"night_level"`            // percent of the original at the peak
-	OwnLevel     bool            `json:"own_level"`
-	Schedule     []SchedulePoint `json:"schedule"`
+	NightLevel RGB             `json:"night_level"` // percent at the peak of night mode
+	OwnLevel   bool            `json:"own_level"`
+	Schedule   []SchedulePoint `json:"schedule"`
 }
 
 // NightStatus describes night mode in the running configuration.
 type NightStatus struct {
-	Enabled        bool   `json:"enabled"`
-	Start          string `json:"start"`
-	End            string `json:"end"`
-	Ramp           string `json:"ramp"`
-	Phase          string `json:"phase"`
-	NextChange     string `json:"next_change,omitempty"` // HH:MM, local time
-	Fallback       string `json:"fallback"`
-	FallbackActive bool   `json:"fallback_active"`
-	FallbackKelvin int    `json:"fallback_kelvin,omitempty"`
+	Enabled    bool   `json:"enabled"`
+	Start      string `json:"start"`
+	End        string `json:"end"`
+	Ramp       string `json:"ramp"`
+	Phase      string `json:"phase"`
+	NextChange string `json:"next_change,omitempty"` // HH:MM, local time
 }
 
 // Status is the payload of a status reply.
@@ -100,6 +102,7 @@ type Status struct {
 	PollInterval   string          `json:"poll_interval"`
 	RescanInterval string          `json:"rescan_interval"`
 	VerifyInterval string          `json:"verify_interval"`
+	Warnings       []string        `json:"warnings"`
 	Monitors       []MonitorStatus `json:"monitors"`
 }
 

@@ -28,9 +28,9 @@ vet:
 check:
     test -z "$(gofmt -l .)" && go vet ./... && go test -race ./...
 
-# Fail if a Go file has non-ASCII characters (the repository language is English)
+# Fail if a file has non-ASCII characters (the repository language is English); the `// Author:` header line is exempt
 english-check:
-    ! grep -rIlP '[^\x00-\x7F]' --include='*.go' --include='justfile' --include='*.toml' --include='*.md' --exclude-dir=.aidlc --exclude-dir=.git .
+    ! grep -rInP '[^\x00-\x7F]' --include='*.go' --include='justfile' --include='*.toml' --include='*.md' --exclude-dir=.aidlc --exclude-dir=.git . | grep -vP '^[^:]+:\d+:// Author: '
 
 # Build into ~/.local/bin/dusk and install the systemd user service (asks before changing anything)
 install:

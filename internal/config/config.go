@@ -19,15 +19,20 @@ const (
 	DefaultVerifyInterval = 5 * time.Minute
 	DefaultRamp           = 30 * time.Minute
 	DefaultBlueGain       = 60
-	DefaultFallback       = FallbackAuto
 )
 
-// Valid values of night.fallback.
+// Brightness backends of a monitor.
 const (
-	// FallbackAuto uses whatever night-light backend is detected at run time.
-	FallbackAuto = "auto"
-	// FallbackOff never touches the desktop's night light.
-	FallbackOff = "off"
+	// BrightnessSoftware scales the gamma ramp; nothing is written to the monitor.
+	BrightnessSoftware = "software"
+	// BrightnessDDC writes the monitor's own backlight (VCP 0x10) over DDC/CI.
+	BrightnessDDC = "ddc"
+)
+
+// Software brightness floor, in percent.
+const (
+	DefaultFloor = 10
+	MaxFloor     = 50
 )
 
 // Config is the validated configuration. It is immutable by convention.
@@ -39,6 +44,8 @@ type Config struct {
 	VerifyInterval time.Duration
 	Night          Night
 	Monitors       []Monitor
+	// Warnings lists things that were accepted but have no effect (for example a legacy key).
+	Warnings []string
 }
 
 // Night describes night mode. Start and End are minutes since 00:00.
@@ -50,7 +57,6 @@ type Night struct {
 	BlueGain  int
 	RedGain   int
 	GreenGain int
-	Fallback  string
 }
 
 // Monitor ties a monitor (by Match) to its brightness schedule.
@@ -58,6 +64,10 @@ type Monitor struct {
 	Name   string
 	Match  string // "model" or "model#serial"
 	Points []Point
+	// Brightness is BrightnessSoftware (default) or BrightnessDDC.
+	Brightness string
+	// Floor is the lowest software brightness in percent (0-50); unused with DDC.
+	Floor int
 	// Night overrides the global night-mode color gains for this monitor only.
 	Night MonitorNight
 }
@@ -76,7 +86,7 @@ func (n MonitorNight) IsZero() bool {
 }
 
 // NightFor returns base with this monitor's color-gain overrides applied. The
-// window, ramp and fallback always come from base.
+// window, ramp always come from base.
 func (m Monitor) NightFor(base Night) Night {
 	if m.Night.BlueGain != nil {
 		base.BlueGain = *m.Night.BlueGain
@@ -125,10 +135,12 @@ type rawNight struct {
 }
 
 type rawMonitor struct {
-	Name   string           `toml:"name"`
-	Match  string           `toml:"match"`
-	Night  *rawMonitorNight `toml:"night"`
-	Points []rawPoint       `toml:"points"`
+	Name       string           `toml:"name"`
+	Match      string           `toml:"match"`
+	Brightness string           `toml:"brightness"`
+	Floor      *int             `toml:"floor"`
+	Night      *rawMonitorNight `toml:"night"`
+	Points     []rawPoint       `toml:"points"`
 }
 
 type rawMonitorNight struct {
@@ -169,6 +181,9 @@ func Parse(data []byte) (*Config, error) {
 	cfg.VerifyInterval = v.duration("verify_interval", raw.VerifyInterval, DefaultVerifyInterval)
 	cfg.Night = v.night(raw.Night)
 	cfg.Monitors = v.monitors(raw.Monitors)
+	if raw.Night != nil && raw.Night.Fallback != "" {
+		cfg.Warnings = append(cfg.Warnings, "night.fallback is ignored: the desktop night light is no longer used (colors are applied by software)")
+	}
 	if len(v.problems) > 0 {
 		return nil, &ValidationError{Problems: v.problems}
 	}
@@ -264,7 +279,6 @@ func (v *validator) night(r *rawNight) Night {
 		BlueGain:  DefaultBlueGain,
 		RedGain:   100,
 		GreenGain: 100,
-		Fallback:  DefaultFallback,
 	}
 	if r == nil {
 		return n // no [night] table: night mode is off
@@ -274,13 +288,6 @@ func (v *validator) night(r *rawNight) Night {
 	n.BlueGain = v.percent("night.blue_gain", r.BlueGain, DefaultBlueGain)
 	n.RedGain = v.percent("night.red_gain", r.RedGain, 100)
 	n.GreenGain = v.percent("night.green_gain", r.GreenGain, 100)
-	switch r.Fallback {
-	case "":
-	case FallbackAuto, FallbackOff:
-		n.Fallback = r.Fallback
-	default:
-		v.addf("night.fallback: unknown value %q (use %q or %q)", r.Fallback, FallbackAuto, FallbackOff)
-	}
 	if !n.Enabled {
 		return n
 	}
@@ -314,7 +321,21 @@ func (v *validator) monitors(raws []rawMonitor) []Monitor {
 		if r.Name != "" {
 			field = fmt.Sprintf("monitor %q", r.Name)
 		}
-		m := Monitor{Name: r.Name, Match: r.Match}
+		m := Monitor{Name: r.Name, Match: r.Match, Brightness: BrightnessSoftware, Floor: DefaultFloor}
+		switch r.Brightness {
+		case "":
+		case BrightnessSoftware, BrightnessDDC:
+			m.Brightness = r.Brightness
+		default:
+			v.addf("%s.brightness: unknown value %q (use %q or %q)", field, r.Brightness, BrightnessSoftware, BrightnessDDC)
+		}
+		if r.Floor != nil {
+			if *r.Floor < 0 || *r.Floor > MaxFloor {
+				v.addf("%s.floor: %d is outside 0-%d", field, *r.Floor, MaxFloor)
+			} else {
+				m.Floor = *r.Floor
+			}
+		}
 		switch {
 		case r.Name == "":
 			v.addf("%s: name is required", field)

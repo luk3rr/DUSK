@@ -13,25 +13,18 @@ import (
 
 	"dusk/internal/daemon"
 	"dusk/internal/ddc/ddctest"
+	"dusk/internal/gamma"
+	"dusk/internal/gamma/gammatest"
 	"dusk/internal/ipc"
-	"dusk/internal/preflight"
 )
 
-type fakeFS struct{}
-
-func (fakeFS) Glob(string) ([]string, error) { return []string{"/dev/i2c-5"}, nil }
-func (fakeFS) OpenRW(string) error           { return nil }
-
-// fakeSetupEnv replaces the seams so `dusk setup` never looks at the real machine.
+// fakeSetupEnv replaces the seams so install, uninstall and start never touch the real machine.
 func fakeSetupEnv(t *testing.T, input string) {
 	t.Helper()
-	oldFS, oldIn, oldGS, oldSys, oldExe := setupFS, setupIn, gsettingsRunner, systemctl, executable
-	setupFS, setupIn = preflight.FS(fakeFS{}), strings.NewReader(input)
-	gsettingsRunner = &ddctest.FakeRunner{Handler: func([]string) (string, error) { return "false\n", nil }}
+	oldIn, oldSys, oldExe := stdin, systemctl, executable
+	stdin = strings.NewReader(input)
 	systemctl = &ddctest.FakeRunner{Handler: func([]string) (string, error) { return "", nil }}
-	t.Cleanup(func() {
-		setupFS, setupIn, gsettingsRunner, systemctl, executable = oldFS, oldIn, oldGS, oldSys, oldExe
-	})
+	t.Cleanup(func() { stdin, systemctl, executable = oldIn, oldSys, oldExe })
 }
 
 func fakeRunner(t *testing.T) *ddctest.FakeRunner {
@@ -126,7 +119,7 @@ func withDaemon(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	t.Setenv("XDG_RUNTIME_DIR", dir)
 	cfg := filepath.Join(dir, "config.toml")
-	toml := "poll_interval = \"1h\"\n[[monitor]]\nname = \"desk\"\nmatch = \"24G4\"\npoints = [{ time = \"00:00\", brightness = 40 }]\n"
+	toml := "poll_interval = \"1h\"\n[[monitor]]\nname = \"desk\"\nmatch = \"24G4\"\npoints = [{ time = \"00:00\", brightness = 100 }]\n"
 	if err := os.WriteFile(cfg, []byte(toml), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -134,8 +127,8 @@ func withDaemon(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		daemon.Run(ctx, daemon.Params{
-			ConfigPath: cfg, SocketPath: filepath.Join(dir, "dusk.sock"), StatePath: filepath.Join(dir, "state.json"),
-			DDC: fakeRunnerWithOneMonitor(),
+			ConfigPath: cfg, SocketPath: filepath.Join(dir, "dusk.sock"),
+			DDC: fakeRunnerWithOneMonitor(), Gamma: oneScreen(),
 		})
 		close(done)
 	}()
@@ -157,6 +150,10 @@ func withDaemon(t *testing.T) {
 	t.Fatal("daemon did not come up")
 }
 
+func oneScreen() gamma.Backend {
+	return gammatest.New(gamma.Output{CRTC: 0, Name: "DP-1", Product: "24G4", Serial: "SN1"})
+}
+
 func fakeRunnerWithOneMonitor() *ddctest.FakeRunner {
 	return &ddctest.FakeRunner{Handler: func(a []string) (string, error) {
 		switch a[0] {
@@ -175,7 +172,7 @@ func TestControlCommandsAgainstARunningDaemon(t *testing.T) {
 	if code := run(context.Background(), []string{"status"}, nil, &out, &errb); code != 0 {
 		t.Fatalf("status exit %d: %s", code, errb.String())
 	}
-	for _, want := range []string{"running", "config:", "night mode:  off", "desk", "24G4#SN1", "online", "brightness   40% now, target 40%", "R 40  G 40  B 40", "schedule     00:00 40%"} {
+	for _, want := range []string{"running", "config:", "night mode:  off", "desk", "24G4#SN1", "online", "brightness   100% now, target 100%", "R 100%  G 100%  B 100%", "schedule     00:00 100%"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("status output lacks %q:\n%s", want, out.String())
 		}
@@ -237,51 +234,6 @@ func TestRunWithoutConfigExplains(t *testing.T) {
 	}
 }
 
-func TestSetupYesWritesTheDefaultConfig(t *testing.T) {
-	fakeSetupEnv(t, "")
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	fr := fakeRunner(t)
-	var out, errb bytes.Buffer
-	if code := run(context.Background(), []string{"setup", "--yes"}, fr, &out, &errb); code != 0 {
-		t.Fatalf("exit %d\n%s\n%s", code, out.String(), errb.String())
-	}
-	path := filepath.Join(dir, "dusk", "config.toml")
-	if code := run(context.Background(), []string{"check-config", path}, nil, &out, &errb); code != 0 {
-		t.Errorf("the generated file does not pass check-config: %s", errb.String())
-	}
-	if len(fr.SetCalls()) != 0 {
-		t.Error("setup must never write to a monitor")
-	}
-}
-
-func TestSetupReportsFailures(t *testing.T) {
-	fakeSetupEnv(t, "")
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	noDDC := &ddctest.FakeRunner{Handler: func([]string) (string, error) { return "", errors.New("ddcutil not found in PATH") }}
-	var out, errb bytes.Buffer
-	if code := run(context.Background(), []string{"setup", "--yes"}, noDDC, &out, &errb); code != 1 {
-		t.Errorf("exit %d; want 1", code)
-	}
-	if !strings.Contains(out.String(), "sudo apt install ddcutil") || !strings.Contains(errb.String(), "dusk setup:") {
-		t.Errorf("stdout %q stderr %q", out.String(), errb.String())
-	}
-}
-
-func TestSetupHonorsConfigFlagAndInput(t *testing.T) {
-	// Accept every default except the very first answer; the rest of the input is empty lines.
-	fakeSetupEnv(t, "mydesk\n"+strings.Repeat("\n", 100))
-	path := filepath.Join(t.TempDir(), "x", "c.toml")
-	var out, errb bytes.Buffer
-	if code := run(context.Background(), []string{"setup", "--config", path}, fakeRunner(t), &out, &errb); code != 0 {
-		t.Fatalf("exit %d\n%s", code, errb.String())
-	}
-	data, err := os.ReadFile(path)
-	if err != nil || !strings.Contains(string(data), `name  = "mydesk"`) {
-		t.Errorf("%v\n%s", err, data)
-	}
-}
-
 func fakeBinary(t *testing.T) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "dusk")
@@ -300,12 +252,25 @@ func TestInstallAndUninstallCommands(t *testing.T) {
 	sys := systemctl.(*ddctest.FakeRunner)
 
 	var out, errb bytes.Buffer
-	// No config yet: --yes runs the setup wizard with its defaults, then installs.
-	if code := run(context.Background(), []string{"install", "--yes"}, fakeRunner(t), &out, &errb); code != 0 {
+	// Without a configuration, install explains how to create one and changes nothing.
+	if code := run(context.Background(), []string{"install", "--yes"}, fakeRunner(t), &out, &errb); code != 1 || !strings.Contains(errb.String(), "create the configuration first") {
 		t.Fatalf("exit %d\n%s\n%s", code, out.String(), errb.String())
 	}
-	if _, err := os.Stat(filepath.Join(cfgHome, "dusk", "config.toml")); err != nil {
-		t.Errorf("the setup wizard should have written the config: %v", err)
+	if len(sys.Calls()) != 0 {
+		t.Fatalf("systemctl must not run without a configuration: %v", sys.Calls())
+	}
+	cfgPath := filepath.Join(cfgHome, "dusk", "config.toml")
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	toml := "[[monitor]]\nname = \"a\"\nmatch = \"A\"\npoints = [{ time = \"08:00\", brightness = 50 }]\n"
+	if err := os.WriteFile(cfgPath, []byte(toml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	errb.Reset()
+	if code := run(context.Background(), []string{"install", "--yes"}, fakeRunner(t), &out, &errb); code != 0 {
+		t.Fatalf("exit %d\n%s\n%s", code, out.String(), errb.String())
 	}
 	unit, err := os.ReadFile(filepath.Join(cfgHome, "systemd", "user", "dusk.service"))
 	resolved, _ := filepath.EvalSymlinks(bin)
@@ -464,11 +429,11 @@ func TestStartReportsSuccessWhenTheDaemonComesUp(t *testing.T) {
 	// "systemctl start" brings up a real daemon (against fake hardware).
 	systemctl.(*ddctest.FakeRunner).Handler = func([]string) (string, error) {
 		cfg := filepath.Join(dir, "config.toml")
-		os.WriteFile(cfg, []byte("poll_interval = \"1h\"\n[[monitor]]\nname = \"d\"\nmatch = \"24G4\"\npoints = [{ time = \"00:00\", brightness = 40 }]\n"), 0o600)
+		os.WriteFile(cfg, []byte("poll_interval = \"1h\"\n[[monitor]]\nname = \"d\"\nmatch = \"24G4\"\npoints = [{ time = \"00:00\", brightness = 100 }]\n"), 0o600)
 		ctx, cancel := context.WithCancel(context.Background())
 		t.Cleanup(cancel)
 		go daemon.Run(ctx, daemon.Params{ConfigPath: cfg, SocketPath: filepath.Join(dir, "dusk.sock"),
-			StatePath: filepath.Join(dir, "state.json"), DDC: fakeRunnerWithOneMonitor()})
+			DDC: fakeRunnerWithOneMonitor(), Gamma: oneScreen()})
 		return "", nil
 	}
 	var out, errb bytes.Buffer
@@ -479,15 +444,14 @@ func TestStartReportsSuccessWhenTheDaemonComesUp(t *testing.T) {
 
 func TestPrintStatusDuringNightMode(t *testing.T) {
 	st := &ipc.Status{
-		Night: 0.5, Config: "/home/x/.config/dusk/config.toml", PollInterval: "30s", RescanInterval: "5m",
-		NightMode: ipc.NightStatus{Enabled: true, Start: "19:00", End: "07:00", Ramp: "1h", Phase: "fading in",
-			NextChange: "20:00", Fallback: "auto", FallbackActive: true, FallbackKelvin: 3700},
+		Night: 0.5, Config: "/home/x/.config/dusk/config.toml", PollInterval: "30s", RescanInterval: "5m", VerifyInterval: "5m",
+		NightMode: ipc.NightStatus{Enabled: true, Start: "19:00", End: "07:00", Ramp: "1h", Phase: "fading in", NextChange: "20:00"},
+		Warnings:  []string{"another program keeps changing the colors of DP-1 (is GNOME Night Light on?)"},
 		Monitors: []ipc.MonitorStatus{
-			{Name: "desk", Key: "MODEL#S1", Bus: 5, Current: 30, Target: 31, Online: true, ColorControl: true,
-				RGB: &ipc.RGB{R: 100, G: 100, B: 80}, RGBTarget: &ipc.RGB{R: 100, G: 100, B: 79},
-				RGBOriginal: &ipc.RGB{R: 100, G: 100, B: 100}, NightLevel: ipc.RGB{R: 100, G: 100, B: 60},
+			{Name: "desk", Key: "MODEL#S1", Output: "DP-1", Bus: 5, DDC: true, BrightnessBackend: "software", Floor: 10, Current: 30, Target: 31, Scale: 37, Online: true,
+				Gamma: ipc.RGB{R: 100, G: 100, B: 80}, NightLevel: ipc.RGB{R: 100, G: 100, B: 60},
 				Schedule: []ipc.SchedulePoint{{Time: "08:00", Brightness: 70}, {Time: "22:00", Brightness: 25}}},
-			{Name: "side", Key: "OTHER", Bus: 7, Online: false, ColorControl: false, Fails: 3, LastError: "i2c hung",
+			{Name: "side", Key: "OTHER", Output: "HDMI-1", BrightnessBackend: "ddc", Current: 20, Target: 20, Online: false, Fails: 3, LastError: "i2c hung",
 				NightLevel: ipc.RGB{R: 100, G: 100, B: 40}, OwnLevel: true, Schedule: []ipc.SchedulePoint{{Time: "00:00", Brightness: 50}}},
 		},
 	}
@@ -497,28 +461,27 @@ func TestPrintStatusDuringNightMode(t *testing.T) {
 		"state:       running",
 		"night mode:  on, 19:00 -> 07:00, fade 1h",
 		"now:         fading in (50%), next change at 20:00",
-		"fallback:    auto, desktop night light in use at 3700K",
-		"desk  (MODEL#S1, bus 5)  online",
-		"color        R 100  G 100  B 80   (target R 100  G 100  B 79)   original R 100  G 100  B 100",
-		"night level  at the peak: R 100%  G 100%  B 60% of the original (global level)",
+		"warning:     another program keeps changing the colors of DP-1",
+		"desk  (MODEL#S1, DP-1, DDC bus 5)  online",
+		"brightness   30% now, target 31% (software, floor 10%, screen scale 37%)",
+		"color        R 100%  G 100%  B 80% (software)",
+		"night level  R 100%  G 100%  B 60% at the peak (global level)",
 		"schedule     08:00 70%, 22:00 25%",
-		"side  (OTHER, bus 7)  offline",
-		"color        no color control over DDC",
-		"last error   i2c hung (failures in a row: 3)",
+		"side  (OTHER, HDMI-1, no DDC)  offline",
+		"(monitor backlight over DDC)",
+		"night level  R 100%  G 100%  B 40% at the peak (own level)",
+		"last error   i2c hung (3 failures)",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("status lacks %q:\n%s", want, out.String())
 		}
-	}
-	if strings.Contains(out.String(), "night level  at the peak: R 100%  G 100%  B 40%") {
-		t.Error("a monitor without color control must not show a night level")
 	}
 }
 
 func TestPrintStatusWhenPausedAndNightIsOff(t *testing.T) {
 	var out bytes.Buffer
 	printStatus(&out, &ipc.Status{Paused: true})
-	for _, want := range []string{"state:       paused", "night mode:  off", "no monitors under a schedule yet"} {
+	for _, want := range []string{"state:       paused", "night mode:  off", "no screens under a schedule yet"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("status lacks %q:\n%s", want, out.String())
 		}

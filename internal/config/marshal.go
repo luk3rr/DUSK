@@ -27,10 +27,6 @@ func Marshal(cfg *Config, notes map[string]string) []byte {
 	if ramp <= 0 {
 		ramp = DefaultRamp
 	}
-	fallback := n.Fallback
-	if fallback == "" {
-		fallback = DefaultFallback
-	}
 	b.WriteString("# Night mode warms the screen colors (less blue) and fades in and out gradually.\n")
 	b.WriteString("[night]\n")
 	if n.Enabled {
@@ -44,9 +40,11 @@ func Marshal(cfg *Config, notes map[string]string) []byte {
 	fmt.Fprintf(&b, "blue_gain  = %d # percent of the original blue at the peak (lower is warmer)\n", n.BlueGain)
 	fmt.Fprintf(&b, "red_gain   = %d\n", n.RedGain)
 	fmt.Fprintf(&b, "green_gain = %d\n", n.GreenGain)
-	fmt.Fprintf(&b, "fallback   = %s # \"auto\" uses the desktop night light for monitors without color control, \"off\" never does\n", tomlString(fallback))
 
 	for _, m := range cfg.Monitors {
+		if m.Brightness == "" { // not normalized by Parse: use the defaults
+			m.Brightness, m.Floor = BrightnessSoftware, DefaultFloor
+		}
 		b.WriteString("\n")
 		if note := notes[m.Name]; note != "" {
 			for _, line := range strings.Split(note, "\n") {
@@ -56,6 +54,12 @@ func Marshal(cfg *Config, notes map[string]string) []byte {
 		b.WriteString("[[monitor]]\n")
 		fmt.Fprintf(&b, "name  = %s\n", tomlString(m.Name))
 		fmt.Fprintf(&b, "match = %s # \"model\" or \"model#serial\"\n", tomlString(m.Match))
+		if m.Brightness == BrightnessDDC {
+			fmt.Fprintf(&b, "brightness = %s # \"software\" scales the screen colors (nothing is stored in the monitor); \"ddc\" uses the monitor's backlight\n", tomlString(m.Brightness))
+		}
+		if m.Floor != DefaultFloor && m.Brightness != BrightnessDDC {
+			fmt.Fprintf(&b, "floor = %d # lowest software brightness in percent (0-%d)\n", m.Floor, MaxFloor)
+		}
 		if !m.Night.IsZero() {
 			var parts []string
 			for _, kv := range []struct {

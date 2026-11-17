@@ -43,7 +43,7 @@ func TestParseValid(t *testing.T) {
 	}
 	n := cfg.Night
 	if !n.Enabled || n.Start != 21*60 || n.End != 7*60 || n.Ramp != 45*time.Minute ||
-		n.BlueGain != 50 || n.RedGain != 100 || n.GreenGain != 100 || n.Fallback != FallbackOff {
+		n.BlueGain != 50 || n.RedGain != 100 || n.GreenGain != 100 {
 		t.Errorf("unexpected night: %+v", n)
 	}
 	if len(cfg.Monitors) != 2 {
@@ -71,9 +71,6 @@ points = [{ time = "08:00", brightness = 10 }]
 	}
 	if cfg.Night.Enabled {
 		t.Error("without [night], night mode must be off")
-	}
-	if cfg.Night.Fallback != FallbackAuto {
-		t.Errorf("default fallback = %q", cfg.Night.Fallback)
 	}
 	if cfg.VerifyInterval != DefaultVerifyInterval || cfg.RescanInterval != DefaultRescanInterval {
 		t.Errorf("defaults: verify %v rescan %v", cfg.VerifyInterval, cfg.RescanInterval)
@@ -103,8 +100,6 @@ func TestParseInvalid(t *testing.T) {
 		{"bad duration", "poll_interval = \"abc\"\n" + mon(ok), "invalid duration"},
 		{"zero duration", "poll_interval = \"0s\"\n" + mon(ok), "must be positive"},
 		{"gain 120", "[night]\nstart = \"21:00\"\nend = \"07:00\"\nblue_gain = 120\n" + mon(ok), "blue_gain"},
-		{"bad fallback", "[night]\nstart = \"21:00\"\nend = \"07:00\"\nfallback = \"x\"\n" + mon(ok), "fallback"},
-		{"old fallback value", "[night]\nstart = \"21:00\"\nend = \"07:00\"\nfallback = \"gnome\"\n" + mon(ok), "fallback"},
 		{"start equals end", "[night]\nstart = \"21:00\"\nend = \"21:00\"\n" + mon(ok), "must differ"},
 		{"night without times", "[night]\n" + mon(ok), "night.start"},
 		{"ramp longer than window", "[night]\nstart = \"21:00\"\nend = \"21:10\"\nramp = \"30m\"\n" + mon(ok), "longer than the night window"},
@@ -186,8 +181,8 @@ points = [{ time = "08:00", brightness = 10 }]
 	if warm.BlueGain != 40 || warm.GreenGain != 90 || warm.RedGain != 100 {
 		t.Errorf("overridden gains = %+v", warm)
 	}
-	if warm.Start != cfg.Night.Start || warm.End != cfg.Night.End || warm.Ramp != cfg.Night.Ramp || warm.Fallback != cfg.Night.Fallback {
-		t.Errorf("the window, ramp and fallback must stay global: %+v", warm)
+	if warm.Start != cfg.Night.Start || warm.End != cfg.Night.End || warm.Ramp != cfg.Night.Ramp {
+		t.Errorf("the window and ramp must stay global: %+v", warm)
 	}
 	if got := cfg.Monitors[1].NightFor(cfg.Night); got != cfg.Night {
 		t.Errorf("a monitor without overrides inherits everything: %+v", got)
@@ -215,10 +210,10 @@ func TestMarshalRoundTripWithMonitorNight(t *testing.T) {
 	blue, red := 45, 90
 	cfg := &Config{
 		PollInterval: DefaultPollInterval, RescanInterval: DefaultRescanInterval, VerifyInterval: DefaultVerifyInterval,
-		Night: Night{Enabled: true, Start: 21 * 60, End: 7 * 60, Ramp: 30 * time.Minute, BlueGain: 60, RedGain: 100, GreenGain: 100, Fallback: FallbackAuto},
+		Night: Night{Enabled: true, Start: 21 * 60, End: 7 * 60, Ramp: 30 * time.Minute, BlueGain: 60, RedGain: 100, GreenGain: 100},
 		Monitors: []Monitor{
-			{Name: "a", Match: "A", Points: []Point{{0, 50}}, Night: MonitorNight{BlueGain: &blue, RedGain: &red}},
-			{Name: "b", Match: "B", Points: []Point{{0, 50}}},
+			{Name: "a", Match: "A", Brightness: BrightnessSoftware, Floor: DefaultFloor, Points: []Point{{0, 50}}, Night: MonitorNight{BlueGain: &blue, RedGain: &red}},
+			{Name: "b", Match: "B", Brightness: BrightnessSoftware, Floor: DefaultFloor, Points: []Point{{0, 50}}},
 		},
 	}
 	out := roundTrip(t, cfg, nil)

@@ -26,10 +26,10 @@ func TestMarshalRoundTrip(t *testing.T) {
 		RescanInterval: 10 * time.Minute,
 		VerifyInterval: 7 * time.Minute,
 		Night: Night{Enabled: true, Start: 21*60 + 30, End: 6*60 + 15, Ramp: time.Hour,
-			BlueGain: 55, RedGain: 95, GreenGain: 100, Fallback: FallbackOff},
+			BlueGain: 55, RedGain: 95, GreenGain: 100},
 		Monitors: []Monitor{
-			{Name: "desk", Match: "MODEL-A#SERIAL-1", Points: []Point{{480, 70}, {1080, 40}, {1320, 20}}},
-			{Name: "side", Match: "MODEL B", Points: []Point{{0, 50}}},
+			{Name: "desk", Match: "MODEL-A#SERIAL-1", Brightness: BrightnessSoftware, Floor: DefaultFloor, Points: []Point{{480, 70}, {1080, 40}, {1320, 20}}},
+			{Name: "side", Match: "MODEL B", Brightness: BrightnessSoftware, Floor: DefaultFloor, Points: []Point{{0, 50}}},
 		},
 	}
 	out := roundTrip(t, cfg, map[string]string{"desk": "Vendor Model A (serial SERIAL-1)\nDP-1, i2c bus 5"})
@@ -43,7 +43,7 @@ func TestMarshalRoundTrip(t *testing.T) {
 func TestMarshalNightDisabledAndNoMonitors(t *testing.T) {
 	cfg := &Config{
 		PollInterval: DefaultPollInterval, RescanInterval: DefaultRescanInterval, VerifyInterval: DefaultVerifyInterval,
-		Night: Night{Enabled: false, Ramp: DefaultRamp, BlueGain: 60, RedGain: 100, GreenGain: 100, Fallback: FallbackAuto},
+		Night: Night{Enabled: false, Ramp: DefaultRamp, BlueGain: 60, RedGain: 100, GreenGain: 100},
 	}
 	out := roundTrip(t, cfg, nil)
 	if !strings.Contains(out, "enabled    = false") || strings.Contains(out, "start") {
@@ -54,9 +54,9 @@ func TestMarshalNightDisabledAndNoMonitors(t *testing.T) {
 func TestMarshalQuotesSpecialCharacters(t *testing.T) {
 	cfg := &Config{
 		PollInterval: DefaultPollInterval, RescanInterval: DefaultRescanInterval, VerifyInterval: DefaultVerifyInterval,
-		Night: Night{Ramp: DefaultRamp, BlueGain: 60, RedGain: 100, GreenGain: 100, Fallback: FallbackAuto},
+		Night: Night{Ramp: DefaultRamp, BlueGain: 60, RedGain: 100, GreenGain: 100},
 		Monitors: []Monitor{
-			{Name: `we"ird\name`, Match: "Model \"X\" \\ 27\"\t#tab", Points: []Point{{0, 10}}},
+			{Name: `we"ird\name`, Match: "Model \"X\" \\ 27\"\t#tab", Brightness: BrightnessSoftware, Floor: DefaultFloor, Points: []Point{{0, 10}}},
 		},
 	}
 	roundTrip(t, cfg, nil)
@@ -69,7 +69,7 @@ func TestMarshalDefaultsForUnsetRampAndFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Night.Ramp != DefaultRamp || got.Night.Fallback != DefaultFallback {
+	if got.Night.Ramp != DefaultRamp {
 		t.Errorf("defaults not applied: %+v", got.Night)
 	}
 }

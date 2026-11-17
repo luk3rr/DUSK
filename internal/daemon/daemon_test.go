@@ -11,6 +11,8 @@ import (
 
 	"dusk/internal/daemon"
 	"dusk/internal/ddc/ddctest"
+	"dusk/internal/gamma"
+	"dusk/internal/gamma/gammatest"
 	"dusk/internal/ipc"
 )
 
@@ -20,7 +22,7 @@ poll_interval = "1h"
 [[monitor]]
 name = "desk"
 match = "24G4"
-points = [{ time = "00:00", brightness = 50 }]
+points = [{ time = "00:00", brightness = 100 }]
 `
 
 type harness struct {
@@ -28,6 +30,7 @@ type harness struct {
 	sock   string
 	config string
 	ddc    *ddctest.FakeRunner
+	gamma  *gammatest.Fake
 	done   chan error
 	cancel context.CancelFunc
 }
@@ -45,6 +48,7 @@ func start(t *testing.T) *harness {
 	if err := os.WriteFile(h.config, []byte(goodConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	h.gamma = gammatest.New(gamma.Output{CRTC: 0, Name: "DP-1", Product: "24G4", Serial: "SN1"})
 	h.ddc = &ddctest.FakeRunner{Handler: func(a []string) (string, error) {
 		switch a[0] {
 		case "detect":
@@ -59,7 +63,7 @@ func start(t *testing.T) *harness {
 	h.done = make(chan error, 1)
 	go func() {
 		h.done <- daemon.Run(ctx, daemon.Params{
-			ConfigPath: h.config, SocketPath: h.sock, StatePath: filepath.Join(dir, "state.json"), DDC: h.ddc,
+			ConfigPath: h.config, SocketPath: h.sock, DDC: h.ddc, Gamma: h.gamma,
 		})
 	}()
 	t.Cleanup(func() {
@@ -99,16 +103,16 @@ func TestStatusPauseResume(t *testing.T) {
 	h := start(t)
 	r := h.send(ipc.CmdStatus)
 	m := r.Monitors[0]
-	if r.Paused || m.Name != "desk" || m.Key != "24G4#SN1" || m.Bus != 5 || m.Current != 50 || m.Target != 50 || !m.Online {
+	if r.Paused || m.Name != "desk" || m.Key != "24G4#SN1" || m.Output != "DP-1" || m.Bus != 0 || m.DDC || m.BrightnessBackend != "software" || m.Current != 100 || m.Target != 100 || !m.Online {
 		t.Errorf("status = %+v", r.Status)
 	}
 	if r.Config != h.config || r.PollInterval != "1h" || r.RescanInterval != "30m" || r.VerifyInterval != "5m" || r.NightMode.Enabled || r.NightMode.Phase != "off" {
 		t.Errorf("configuration in the status = %+v", r.Status)
 	}
-	if !m.ColorControl || m.RGB == nil || *m.RGB != (ipc.RGB{R: 50, G: 50, B: 50}) || m.RGBTarget != nil {
-		t.Errorf("colors in the status = %+v", m)
+	if m.Gamma != (ipc.RGB{R: 100, G: 100, B: 100}) || m.Scale != 100 || len(r.Warnings) != 0 {
+		t.Errorf("colors in the status = %+v warnings %v", m, r.Warnings)
 	}
-	if len(m.Schedule) != 1 || m.Schedule[0].Time != "00:00" || m.Schedule[0].Brightness != 50 {
+	if len(m.Schedule) != 1 || m.Schedule[0].Time != "00:00" || m.Schedule[0].Brightness != 100 {
 		t.Errorf("schedule in the status = %+v", m.Schedule)
 	}
 	if !h.send(ipc.CmdPause).OK || !h.send(ipc.CmdStatus).Paused {
@@ -117,8 +121,8 @@ func TestStatusPauseResume(t *testing.T) {
 	if !h.send(ipc.CmdResume).OK || h.send(ipc.CmdStatus).Paused {
 		t.Error("resume did not take effect")
 	}
-	if n := len(h.ddc.SetCalls()); n != 0 {
-		t.Errorf("no write was expected, got %d", n)
+	if n := len(h.ddc.Calls()); n != 0 {
+		t.Errorf("software monitors must not touch ddcutil at all, got %d calls", n)
 	}
 }
 
@@ -169,7 +173,7 @@ func TestStopEndsTheDaemonAndRemovesTheSocket(t *testing.T) {
 func TestSecondInstanceIsRefused(t *testing.T) {
 	h := start(t)
 	err := daemon.Run(context.Background(), daemon.Params{
-		ConfigPath: h.config, SocketPath: h.sock, StatePath: filepath.Join(filepath.Dir(h.sock), "s2.json"), DDC: h.ddc,
+		ConfigPath: h.config, SocketPath: h.sock, DDC: h.ddc, Gamma: h.gamma,
 	})
 	if !errors.Is(err, ipc.ErrAlreadyRunning) {
 		t.Errorf("second Run = %v", err)
@@ -182,7 +186,7 @@ func TestInvalidConfigAtStartup(t *testing.T) {
 	if err := os.WriteFile(bad, []byte("nonsense ["), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := daemon.Run(context.Background(), daemon.Params{ConfigPath: bad, SocketPath: filepath.Join(dir, "s"), StatePath: filepath.Join(dir, "st")})
+	err := daemon.Run(context.Background(), daemon.Params{ConfigPath: bad, SocketPath: filepath.Join(dir, "s")})
 	if err == nil {
 		t.Error("expected an error")
 	}

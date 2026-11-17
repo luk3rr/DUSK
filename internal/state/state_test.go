@@ -5,15 +5,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"dusk/internal/nightlight"
 )
 
 func TestRoundTrip(t *testing.T) {
 	s := Store{Path: filepath.Join(t.TempDir(), "sub", "state.json")}
 	st := New()
 	st.Originals["24G4#S1"] = RGB{R: 90, G: 95, B: 100}
-	st.NightLight = &nightlight.Original{Enabled: false, Automatic: true, From: 20, To: 6, Temperature: 2700}
 	if err := s.Save(st); err != nil {
 		t.Fatal(err)
 	}
@@ -21,7 +18,7 @@ func TestRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Originals["24G4#S1"] != (RGB{90, 95, 100}) || got.NightLight == nil || got.NightLight.Temperature != 2700 || got.Version != Version {
+	if got.Originals["24G4#S1"] != (RGB{90, 95, 100}) || got.Version != Version {
 		t.Errorf("round trip: %+v", got)
 	}
 }
@@ -49,7 +46,7 @@ func TestSaveIsPrivateAndLeavesNoTempFiles(t *testing.T) {
 
 func TestLoadMissingIsEmpty(t *testing.T) {
 	st, err := Store{Path: filepath.Join(t.TempDir(), "missing.json")}.Load()
-	if err != nil || len(st.Originals) != 0 || st.NightLight != nil {
+	if err != nil || len(st.Originals) != 0 {
 		t.Errorf("%+v %v", st, err)
 	}
 }

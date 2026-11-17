@@ -20,25 +20,22 @@ import (
 	"dusk/internal/config"
 	"dusk/internal/daemon"
 	"dusk/internal/ddc"
+	"dusk/internal/gamma"
 	"dusk/internal/install"
 	"dusk/internal/ipc"
 	"dusk/internal/logs"
 	"dusk/internal/monitors"
-	"dusk/internal/preflight"
-	"dusk/internal/prompt"
-	"dusk/internal/setup"
+	"dusk/internal/service"
 	"dusk/internal/state"
 )
 
 // Seams that tests replace so they never touch the real machine.
 var (
-	setupFS         preflight.FS = preflight.OSFS{}
-	setupIn         io.Reader    = os.Stdin
-	gsettingsRunner ddc.Runner   = ddc.ExecRunner{Path: "gsettings"}
-	systemctl       ddc.Runner   = ddc.ExecRunner{Path: "systemctl"}
-	executable                   = os.Executable
-	startWait                    = 5 * time.Second // how long `dusk start` waits for the daemon to answer
-	journalctl      logs.Exec    = logs.ExecJournalctl
+	stdin      io.Reader  = os.Stdin
+	systemctl  ddc.Runner = ddc.ExecRunner{Path: "systemctl"}
+	executable            = os.Executable
+	startWait             = 5 * time.Second // how long `dusk start` waits for the daemon to answer
+	journalctl logs.Exec  = logs.ExecJournalctl
 )
 
 // Exit codes.
@@ -56,6 +53,9 @@ func main() {
 
 func run(ctx context.Context, args []string, r ddc.Runner, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
+		if interactive() {
+			return runTUI(ctx, r, stderr)
+		}
 		fmt.Fprintln(stderr, usage)
 		return exitUsage
 	}
@@ -67,7 +67,11 @@ func run(ctx context.Context, args []string, r ddc.Runner, stdout, stderr io.Wri
 	case "run":
 		return runDaemon(ctx, args[1:], r, stderr)
 	case "setup":
-		return runSetup(ctx, args[1:], r, stdout, stderr)
+		return runTUI(ctx, r, stderr) // the guided setup is now part of the terminal interface
+	case "reset-ddc":
+		return runResetDDC(ctx, args[1:], r, stdout, stderr)
+	case "reset-gamma":
+		return runResetGamma(ctx, stdout, stderr)
 	case "start":
 		return runStart(ctx, stdout, stderr)
 	case "logs":
@@ -84,10 +88,12 @@ func run(ctx context.Context, args []string, r ddc.Runner, stdout, stderr io.Wri
 	}
 }
 
-const usage = `usage: dusk <command>
+const usage = `usage: dusk [command]
+
+With no command, dusk opens its terminal interface.
 
 commands:
-  setup [--yes]         detect the monitors and create the configuration interactively
+  setup                 open the terminal interface (creates the configuration if there is none)
   install [--yes]       install and start the systemd user service (starts at every login)
   uninstall [--yes]     stop and remove the service (the configuration is kept)
   run [--config file]   run the daemon (normally started by the service)
@@ -98,6 +104,8 @@ commands:
   reload                re-read the configuration file
   stop                  stop the daemon, restoring the original colors
   list                  list the detected monitors
+  reset-gamma           put every screen back to its normal colors and brightness
+  reset-ddc [--yes] [--to-max]  restore the color gains an older dusk saved (asks first)
   check-config [file]   validate a configuration file`
 
 func defaultConfigPath() (string, error) {
@@ -126,6 +134,9 @@ func checkConfig(args []string, stdout, stderr io.Writer) int {
 		return exitUsage
 	}
 	fmt.Fprintf(stdout, "%s: ok (%d monitor(s), night mode %v)\n", path, len(cfg.Monitors), cfg.Night.Enabled)
+	for _, w := range cfg.Warnings {
+		fmt.Fprintf(stdout, "warning: %s\n", w)
+	}
 	return exitOK
 }
 
@@ -143,12 +154,29 @@ func list(ctx context.Context, r ddc.Runner, stdout, stderr io.Writer) int {
 	}
 	displays, err := monitors.Discover(ctx, r)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		fmt.Fprintf(stderr, "note: DDC/CI monitors unavailable: %v\n", err)
+		displays = nil
+	}
+	var outputs []gamma.Output
+	if b, err := gammaConnect(ctx); err != nil {
+		fmt.Fprintf(stderr, "note: no software color backend: %v\n", err)
+	} else if outputs, err = b.Outputs(ctx); err != nil {
+		fmt.Fprintf(stderr, "note: cannot list screens: %v\n", err)
+	}
+	if len(displays) == 0 && len(outputs) == 0 {
+		fmt.Fprintln(stderr, "no monitors found (neither software-controllable screens nor DDC/CI monitors)")
 		return exitUsage
 	}
+	if len(outputs) > 0 {
+		if code := listScreens(stdout, stderr, cfg, outputs, displays); code != exitOK {
+			return code
+		}
+	}
 	if len(displays) == 0 {
-		fmt.Fprintln(stderr, "no DDC/CI monitors found")
-		return exitUsage
+		return exitOK
+	}
+	if len(outputs) > 0 {
+		fmt.Fprintln(stdout)
 	}
 	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "NAME\tMODEL\tSERIAL\tPORT\tBUS\tBRIGHTNESS\tRGB\tSUGGESTED MATCH")
@@ -181,6 +209,31 @@ func list(ctx context.Context, r ddc.Runner, stdout, stderr io.Writer) int {
 	return exitOK
 }
 
+// listScreens prints the screens that accept software color, with their
+// configuration entry and DDC bus.
+func listScreens(stdout, stderr io.Writer, cfg *config.Config, outputs []gamma.Output, displays []ddc.Display) int {
+	w := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tSCREEN\tMODEL\tSERIAL\tDDC BUS\tSUGGESTED MATCH")
+	for _, r := range monitors.Resolve(cfg, outputs, displays) {
+		name, serial, bus := "-", r.Output.Serial, "-"
+		if r.Monitor != nil {
+			name = r.Monitor.Name
+		}
+		if serial == "" {
+			serial = "-"
+		}
+		if r.Display != nil {
+			bus = strconv.Itoa(r.Display.Info().Bus)
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", name, r.Output.Name, r.Output.Product, serial, bus, r.Output.Key())
+	}
+	if err := w.Flush(); err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitUsage
+	}
+	return exitOK
+}
+
 // runDaemon implements `dusk run`.
 func runDaemon(ctx context.Context, args []string, r ddc.Runner, stderr io.Writer) int {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
@@ -199,7 +252,7 @@ func runDaemon(ctx context.Context, args []string, r ddc.Runner, stderr io.Write
 		path = p
 	}
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-		fmt.Fprintf(stderr, "configuration file not found: %s\ncreate it with `dusk setup`\n", path)
+		fmt.Fprintf(stderr, "configuration file not found: %s\ncreate it by running `dusk` (the Monitors tab creates it for you)\n", path)
 		return exitUsage
 	}
 	sock, err := ipc.SocketPath()
@@ -207,17 +260,11 @@ func runDaemon(ctx context.Context, args []string, r ddc.Runner, stderr io.Write
 		fmt.Fprintln(stderr, err)
 		return exitUsage
 	}
-	statePath, err := state.DefaultPath()
-	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return exitUsage
-	}
 	err = daemon.Run(ctx, daemon.Params{
 		ConfigPath: path,
 		SocketPath: sock,
-		StatePath:  statePath,
 		DDC:        r,
-		Gsettings:  gsettingsRunner,
+		Gamma:      gamma.Lazy(gammaConnect),
 		Log:        slog.New(slog.NewTextHandler(stderr, nil)),
 	})
 	if err != nil {
@@ -258,12 +305,12 @@ func control(ctx context.Context, cmd string, stdout, stderr io.Writer) int {
 func printStatus(w io.Writer, st *ipc.Status) {
 	state := "running"
 	if st.Paused {
-		state = "paused"
+		state = "paused (screens are back to their normal colors)"
 	}
 	fmt.Fprintf(w, "state:       %s\n", state)
 	if st.Config != "" {
 		fmt.Fprintf(w, "config:      %s\n", st.Config)
-		fmt.Fprintf(w, "timing:      targets every %s, monitors re-read every %s, monitor list rescanned every %s\n", st.PollInterval, st.VerifyInterval, st.RescanInterval)
+		fmt.Fprintf(w, "timing:      targets every %s, screen colors checked every minute, DDC monitors re-read every %s, screen list rescanned every %s\n", st.PollInterval, st.VerifyInterval, st.RescanInterval)
 	}
 	n := st.NightMode
 	if !n.Enabled {
@@ -275,17 +322,12 @@ func printStatus(w io.Writer, st *ipc.Status) {
 			next = ", next change at " + n.NextChange
 		}
 		fmt.Fprintf(w, "now:         %s (%.0f%%)%s\n", n.Phase, st.Night*100, next)
-		fb := "off (never uses the desktop night light)"
-		switch {
-		case n.Fallback == "auto" && n.FallbackActive:
-			fb = fmt.Sprintf("auto, desktop night light in use at %dK", n.FallbackKelvin)
-		case n.Fallback == "auto":
-			fb = "auto, desktop night light not needed right now"
-		}
-		fmt.Fprintf(w, "fallback:    %s\n", fb)
+	}
+	for _, warn := range st.Warnings {
+		fmt.Fprintf(w, "warning:     %s\n", warn)
 	}
 	if len(st.Monitors) == 0 {
-		fmt.Fprintln(w, "\nno monitors under a schedule yet")
+		fmt.Fprintln(w, "\nno screens under a schedule yet")
 		return
 	}
 	for _, m := range st.Monitors {
@@ -293,81 +335,35 @@ func printStatus(w io.Writer, st *ipc.Status) {
 		if !m.Online {
 			status = "offline"
 		}
-		fmt.Fprintf(w, "\n%s  (%s, bus %d)  %s\n", m.Name, m.Key, m.Bus, status)
-		fmt.Fprintf(w, "  brightness   %d%% now, target %d%%\n", m.Current, m.Target)
-		fmt.Fprintf(w, "  color        %s\n", colorLine(m))
-		if m.ColorControl && n.Enabled {
-			scope := "global level"
+		ddcText := "no DDC"
+		if m.DDC {
+			ddcText = fmt.Sprintf("DDC bus %d", m.Bus)
+		}
+		fmt.Fprintf(w, "\n%s  (%s, %s, %s)  %s\n", m.Name, m.Key, m.Output, ddcText, status)
+		if m.BrightnessBackend == config.BrightnessDDC {
+			fmt.Fprintf(w, "  brightness   %d%% now, target %d%% (monitor backlight over DDC)\n", m.Current, m.Target)
+		} else {
+			fmt.Fprintf(w, "  brightness   %d%% now, target %d%% (software, floor %d%%, screen scale %d%%)\n", m.Current, m.Target, m.Floor, m.Scale)
+		}
+		fmt.Fprintf(w, "  color        R %d%%  G %d%%  B %d%% (software)\n", m.Gamma.R, m.Gamma.G, m.Gamma.B)
+		if n.Enabled {
+			level := "global level"
 			if m.OwnLevel {
-				scope = "this monitor's own level"
+				level = "own level"
 			}
-			fmt.Fprintf(w, "  night level  at the peak: %s of the original (%s)\n", rgbPercent(m.NightLevel), scope)
+			fmt.Fprintf(w, "  night level  R %d%%  G %d%%  B %d%% at the peak (%s)\n", m.NightLevel.R, m.NightLevel.G, m.NightLevel.B, level)
 		}
-		pts := make([]string, len(m.Schedule))
-		for i, p := range m.Schedule {
-			pts[i] = fmt.Sprintf("%s %d%%", p.Time, p.Brightness)
+		if len(m.Schedule) > 0 {
+			parts := make([]string, 0, len(m.Schedule))
+			for _, p := range m.Schedule {
+				parts = append(parts, fmt.Sprintf("%s %d%%", p.Time, p.Brightness))
+			}
+			fmt.Fprintf(w, "  schedule     %s\n", strings.Join(parts, ", "))
 		}
-		fmt.Fprintf(w, "  schedule     %s\n", strings.Join(pts, ", "))
 		if m.LastError != "" {
-			fmt.Fprintf(w, "  last error   %s (failures in a row: %d)\n", m.LastError, m.Fails)
+			fmt.Fprintf(w, "  last error   %s (%d failures)\n", m.LastError, m.Fails)
 		}
 	}
-}
-
-func rgbText(c *ipc.RGB) string { return fmt.Sprintf("R %d  G %d  B %d", c.R, c.G, c.B) }
-
-func rgbPercent(c ipc.RGB) string { return fmt.Sprintf("R %d%%  G %d%%  B %d%%", c.R, c.G, c.B) }
-
-// colorLine summarizes the monitor's color gains for `dusk status`.
-func colorLine(m ipc.MonitorStatus) string {
-	if !m.ColorControl {
-		return "no color control over DDC"
-	}
-	if m.RGB == nil {
-		return "not read yet"
-	}
-	line := rgbText(m.RGB)
-	if m.RGBTarget != nil {
-		line += "   (target " + rgbText(m.RGBTarget) + ")"
-	}
-	if m.RGBOriginal != nil {
-		line += "   original " + rgbText(m.RGBOriginal)
-	}
-	return line
-}
-
-// runSetup implements `dusk setup`.
-func runSetup(ctx context.Context, args []string, r ddc.Runner, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
-	fs.SetOutput(stderr)
-	cfgPath := fs.String("config", "", "configuration file to write (default: the user config directory)")
-	yes := fs.Bool("yes", false, "accept every default without asking")
-	if err := fs.Parse(args); err != nil {
-		return exitUsage
-	}
-	path := *cfgPath
-	if path == "" {
-		p, err := defaultConfigPath()
-		if err != nil {
-			fmt.Fprintln(stderr, err)
-			return exitUsage
-		}
-		path = p
-	}
-	err := setup.Run(ctx, setup.Options{
-		ConfigPath: path,
-		Yes:        *yes,
-		DDC:        r,
-		Gsettings:  gsettingsRunner,
-		FS:         setupFS,
-		In:         setupIn,
-		Out:        stdout,
-	})
-	if err != nil {
-		fmt.Fprintln(stderr, "\ndusk setup:", err)
-		return exitUsage
-	}
-	return exitOK
 }
 
 // installOptions builds the options shared by install and uninstall.
@@ -394,7 +390,7 @@ func installOptions(fs *flag.FlagSet, args []string) (install.Options, string, b
 		UnitDir:        filepath.Join(cfgDir, "systemd", "user"),
 		Systemctl:      systemctl,
 		Yes:            *yes,
-		In:             setupIn,
+		In:             stdin,
 	}
 	if *cfgPath != "" {
 		o.ConfigPath, o.ExplicitConfig = *cfgPath, *cfgPath != def
@@ -418,11 +414,6 @@ func runInstall(ctx context.Context, args []string, r ddc.Runner, stdout, stderr
 		return exitUsage
 	}
 	o.Bin, o.NoStart, o.Out = bin, *noStart, stdout
-	o.RunSetup = func(ctx context.Context, p *prompt.Prompter) error {
-		return setup.Run(ctx, setup.Options{
-			ConfigPath: o.ConfigPath, Yes: o.Yes, DDC: r, Gsettings: gsettingsRunner, FS: setupFS, Out: stdout, Prompter: p,
-		})
-	}
 	if err := install.Install(ctx, o); err != nil {
 		fmt.Fprintln(stderr, "\ndusk install:", err)
 		return exitUsage
@@ -482,7 +473,7 @@ func runStart(ctx context.Context, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "dusk is already running")
 		return exitOK
 	}
-	if _, err := systemctl.Run(ctx, "--user", "start", install.UnitName); err != nil {
+	if err := (service.Manager{Systemctl: systemctl}).Start(ctx); err != nil {
 		fmt.Fprintf(stderr, "dusk start: %v\nIs the service installed? Install it with: dusk install\n", err)
 		return exitUsage
 	}

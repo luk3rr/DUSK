@@ -74,7 +74,7 @@ func TestRenderUnit(t *testing.T) {
 	u := install.RenderUnit("/usr/local/bin/dusk", "")
 	for _, want := range []string{
 		"After=graphical-session.target", "PartOf=graphical-session.target",
-		"ExecStart=/usr/local/bin/dusk run\n", "Restart=on-failure", "RestartSec=5", "WantedBy=graphical-session.target",
+		"ExecStart=/usr/local/bin/dusk run\n", "ExecStopPost=/usr/local/bin/dusk reset-gamma\n", "Restart=on-failure", "RestartSec=5", "WantedBy=graphical-session.target",
 	} {
 		if !strings.Contains(u, want) {
 			t.Errorf("unit lacks %q:\n%s", want, u)
@@ -86,6 +86,9 @@ func TestRenderUnit(t *testing.T) {
 	if got := install.RenderUnit("/opt/my tools/dusk", "/home/a b/50%/c.toml"); !strings.Contains(got,
 		`ExecStart="/opt/my tools/dusk" run --config "/home/a b/50%%/c.toml"`) {
 		t.Errorf("quoting:\n%s", got)
+	}
+	if got := install.RenderUnit("/opt/my tools/dusk", ""); !strings.Contains(got, `ExecStopPost="/opt/my tools/dusk" reset-gamma`) {
+		t.Errorf("ExecStopPost quoting:\n%s", got)
 	}
 }
 

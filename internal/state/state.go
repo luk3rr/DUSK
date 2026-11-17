@@ -1,5 +1,6 @@
-// Package state persists what dusk must remember between runs: each monitor's
-// original RGB gains and the original night-light settings (ADR-5).
+// Package state reads what older dusk versions saved between runs: each
+// monitor's original RGB gains (ADR-5). The controller no longer writes it;
+// only `dusk reset-ddc` reads it, to put those gains back.
 package state
 
 import (
@@ -8,8 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-
-	"dusk/internal/nightlight"
 )
 
 // Version is the file format version.
@@ -26,8 +25,6 @@ type RGB struct {
 type State struct {
 	Version   int            `json:"version"`
 	Originals map[string]RGB `json:"originals"`
-	// NightLight is non-nil while dusk controls the night light.
-	NightLight *nightlight.Original `json:"nightlight_original"`
 }
 
 // New returns an empty state.

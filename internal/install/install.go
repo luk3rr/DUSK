@@ -90,6 +90,7 @@ func RenderUnit(bin, configPath string) string {
 		"[Service]\n" +
 		"Type=simple\n" +
 		"ExecStart=" + exec + "\n" +
+		"ExecStopPost=" + quote(bin) + " reset-gamma\n" +
 		"Restart=on-failure\n" +
 		"RestartSec=5\n" +
 		"\n" +
