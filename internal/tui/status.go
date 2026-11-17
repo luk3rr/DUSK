@@ -10,6 +10,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"dusk/internal/config"
 	"dusk/internal/ipc"
 )
 
@@ -31,15 +32,15 @@ func (m Model) statusBody() string {
 	}
 	var buf bytes.Buffer
 	w := tabwriter.NewWriter(&buf, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "Monitor\tScreen\tBrightness\tColor R G B\tBackend\tState")
+	fmt.Fprintln(w, "Monitor\tScreen\tBrightness\tR G B\tTemp\tMode\tState")
 	for _, mon := range m.st.Monitors {
-		level := fmt.Sprintf("%s %3d%%", bar(mon.Current, 0, 100, 12), mon.Current)
+		level := fmt.Sprintf("%s %3d%%", bar(mon.Current, 0, 100, 8), mon.Current)
 		if mon.Current != mon.Target {
 			level += fmt.Sprintf(" -> %d%%", mon.Target)
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%d %d %d\t%s\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%s\t%d %d %d\t%d K\t%s\t%s\n",
 			mon.Name, mon.Output, level, mon.Gamma.R, mon.Gamma.G, mon.Gamma.B,
-			backendLabel(mon), stateLabel(mon))
+			config.KelvinForGains(mon.Gamma.R, mon.Gamma.G, mon.Gamma.B), backendLabel(mon), stateLabel(mon))
 	}
 	w.Flush()
 	lines := strings.Split(strings.TrimRight(buf.String(), "\n"), "\n")

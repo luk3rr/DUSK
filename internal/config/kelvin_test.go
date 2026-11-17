@@ -44,3 +44,28 @@ func TestGainsForKelvin(t *testing.T) {
 		t.Errorf("clamp high = %d %d %d", r1, g1, b1)
 	}
 }
+
+func TestKelvinForGainsInvertsGainsForKelvin(t *testing.T) {
+	for k := config.MinKelvin; k <= config.NeutralKelvin; k += 100 {
+		r, g, b := config.GainsForKelvin(k)
+		got := config.KelvinForGains(r, g, b)
+		// Several temperatures share the same whole-percent gains, so allow the nearest ones.
+		gr, gg, gb := config.GainsForKelvin(got)
+		if abs(gr-r)+abs(gg-g)+abs(gb-b) > 1 {
+			t.Errorf("%d K -> gains %d %d %d -> %d K (gains %d %d %d)", k, r, g, b, got, gr, gg, gb)
+		}
+	}
+	if got := config.KelvinForGains(100, 100, 100); got != config.NeutralKelvin {
+		t.Errorf("no change = %d K", got)
+	}
+	if got := config.KelvinForGains(100, 80, 60); got < 3000 || got > 4000 {
+		t.Errorf("100 80 60 = %d K", got)
+	}
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}

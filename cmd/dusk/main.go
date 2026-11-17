@@ -345,7 +345,8 @@ func printStatus(w io.Writer, st *ipc.Status) {
 		} else {
 			fmt.Fprintf(w, "  brightness   %d%% now, target %d%% (software, floor %d%%, screen scale %d%%)\n", m.Current, m.Target, m.Floor, m.Scale)
 		}
-		fmt.Fprintf(w, "  color        R %d%%  G %d%%  B %d%% (software)\n", m.Gamma.R, m.Gamma.G, m.Gamma.B)
+		fmt.Fprintf(w, "  color        R %d%%  G %d%%  B %d%% (software, about %d K)\n", m.Gamma.R, m.Gamma.G, m.Gamma.B,
+			config.KelvinForGains(m.Gamma.R, m.Gamma.G, m.Gamma.B))
 		if n.Enabled {
 			level := "global level"
 			if m.OwnLevel {

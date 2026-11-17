@@ -464,7 +464,7 @@ func TestPrintStatusDuringNightMode(t *testing.T) {
 		"warning:     another program keeps changing the colors of DP-1",
 		"desk  (MODEL#S1, DP-1, DDC bus 5)  online",
 		"brightness   30% now, target 31% (software, floor 10%, screen scale 37%)",
-		"color        R 100%  G 100%  B 80% (software)",
+		"color        R 100%  G 100%  B 80% (software, about ",
 		"night level  R 100%  G 100%  B 60% at the peak (global level)",
 		"schedule     08:00 70%, 22:00 25%",
 		"side  (OTHER, HDMI-1, no DDC)  offline",

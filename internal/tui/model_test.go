@@ -92,7 +92,7 @@ func TestStatusViewShowsEveryMonitor(t *testing.T) {
 	v := m.View()
 	for _, want := range []string{
 		"dusk", "running", "night 57% (fading in)", "next 19:29",
-		"Monitor", "Direita", "DP-1", " 18%", "[=o--", "100 89 60", "software", "online",
+		"Monitor", "Direita", "DP-1", " 18%", "[=o--", "100 89 60", "3", " K", "software", "online",
 		"Centro", "HDMI-1", "20% -> 22%", "ddc", "offline",
 		"! Centro: i2c hung", "! another program keeps changing the colors of DP-1",
 		"1 Status", "2 Monitors", "3 Night", "4 Service", "p pause/resume",

@@ -34,6 +34,31 @@ func kelvinRGB(k int) (r, g, b float64) {
 	return clamp(r), clamp(g), clamp(b)
 }
 
+// KelvinForGains returns the color temperature whose gains are closest to the given
+// ones (percent of full). Gains that change nothing give NeutralKelvin. It is how the
+// interface tells the current warmth, whatever mix of channels is applied.
+func KelvinForGains(r, g, b int) int {
+	if r >= 100 && g >= 100 && b >= 100 {
+		return NeutralKelvin
+	}
+	best, bestD := NeutralKelvin, 1<<30
+	for k := NeutralKelvin; k >= MinKelvin; k -= 50 {
+		kr, kg, kb := GainsForKelvin(k)
+		d := abs(kr-r) + 2*abs(kg-g) + 2*abs(kb-b)
+		if d < bestD {
+			best, bestD = k, d
+		}
+	}
+	return best
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
 // GainsForKelvin returns the red, green and blue gains, in percent of full,
 // that give the screen the color of a light at k kelvin. NeutralKelvin gives
 // 100, 100, 100; lower values remove blue first, then green. k is clamped to
